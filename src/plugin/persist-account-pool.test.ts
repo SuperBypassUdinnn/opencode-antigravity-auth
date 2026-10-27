@@ -187,6 +187,14 @@ describe("saveAccounts", () => {
   });
 
   it("saves valid storage to disk", async () => {
+    vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+      if (String(filePath).endsWith(".gitignore")) {
+        return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+      }
+      const error = new Error("ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    });
     vi.mocked(fs.writeFile).mockResolvedValue(undefined);
     vi.mocked(fs.mkdir).mockResolvedValue(undefined);
 

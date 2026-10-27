@@ -41,7 +41,9 @@
     },
     "files": [
         "index.js",
+        "index.ts",
         "tui.js",
+        "tui.ts",
         "dist/",
         "README.md",
         "LICENSE"
@@ -62,10 +64,10 @@
     "devDependencies": {
         "@types/node": "^24.10.1",
         "@types/proper-lockfile": "^4.1.4",
-        "@vitest/coverage-v8": "^3.0.0",
-        "@vitest/ui": "^3.0.0",
+        "@vitest/coverage-v8": "^4.1.12",
+        "@vitest/ui": "^4.1.12",
         "typescript": "^5.0.0",
-        "vitest": "^3.0.0",
+        "vitest": "^4.1.12",
         "zod-to-json-schema": "^3.25.1"
     },
     "dependencies": {
@@ -76,6 +78,9 @@
         "@openauthjs/openauth": "^0.4.3",
         "proper-lockfile": "^4.1.2",
         "xdg-basedir": "^5.1.0",
-        "zod": "^4.0.0"
+        "zod": "^4.6.7"
+    },
+    "overrides": {
+        "zod": "^4.6.7"
     }
 }

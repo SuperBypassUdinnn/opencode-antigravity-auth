@@ -97,7 +97,11 @@ vi.mock("./plugin/server.ts", () => ({
 
 type OAuthMethod = Extract<IntegrationMethodRegistration, { refresh?: unknown }>
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-const googleSDKPackage = `aisdk:${pathToFileURL(createRequire(import.meta.url).resolve("@ai-sdk/google")).href}`
+const googleSDKPackage = `aisdk:${
+  typeof import.meta.resolve === "function"
+    ? import.meta.resolve("@ai-sdk/google")
+    : pathToFileURL(createRequire(import.meta.url).resolve("@ai-sdk/google")).href
+}`
 const cleanups: Array<() => Promise<void> | void> = []
 
 function credential(refresh = "refresh|project"): Credential.OAuth {
