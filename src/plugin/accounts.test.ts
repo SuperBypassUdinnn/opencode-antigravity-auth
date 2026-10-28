@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AccountManager, type ModelFamily, type HeaderStyle, parseRateLimitReason, calculateBackoffMs, type RateLimitReason, resolveQuotaGroup } from "./accounts";
+import { AccountManager, type ModelFamily, type HeaderStyle, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, type RateLimitReason, resolveQuotaGroup } from "./accounts";
 import { saveAccounts, type AccountStorageV4 } from "./storage";
 import type { OAuthAuthDetails } from "./types";
 
@@ -1257,6 +1257,51 @@ describe("AccountManager", () => {
       it("returns UNKNOWN when no pattern matches", () => {
         expect(parseRateLimitReason(undefined, "Some other error")).toBe("UNKNOWN");
         expect(parseRateLimitReason(undefined, undefined)).toBe("UNKNOWN");
+      });
+    });
+
+    describe("parseForbiddenQuotaReason", () => {
+      it("classifies a 403 resource exhausted body as quota exhaustion", () => {
+        expect(
+          parseForbiddenQuotaReason(
+            "RESOURCE_EXHAUSTED",
+            "Resource has been exhausted (e.g. check quota).",
+          ),
+        ).toBe("QUOTA_EXHAUSTED");
+      });
+
+      it("classifies a quota message reported on the reason alone", () => {
+        expect(parseForbiddenQuotaReason("QUOTA_EXCEEDED", undefined)).toBe("QUOTA_EXHAUSTED");
+      });
+
+      it("finds the marker inside the raw body", () => {
+        const body = JSON.stringify({
+          error: { code: 403, status: "RESOURCE_EXHAUSTED", message: "Quota exceeded for quota metric" },
+        });
+        expect(parseForbiddenQuotaReason(undefined, undefined, body)).toBe("QUOTA_EXHAUSTED");
+      });
+
+      it("treats an exhausted G1 credit balance as quota exhaustion", () => {
+        expect(parseForbiddenQuotaReason("INSUFFICIENT_G1_CREDITS_BALANCE", undefined)).toBe(
+          "QUOTA_EXHAUSTED",
+        );
+        expect(parseForbiddenQuotaReason(undefined, "g1 credits balance is empty")).toBe(
+          "QUOTA_EXHAUSTED",
+        );
+      });
+
+      it("leaves verification challenges alone", () => {
+        expect(
+          parseForbiddenQuotaReason(
+            "VALIDATION_REQUIRED",
+            "validation_required: verify at https://accounts.google.com/signin/continue",
+          ),
+        ).toBeUndefined();
+      });
+
+      it("leaves a plain forbidden request alone", () => {
+        expect(parseForbiddenQuotaReason("PERMISSION_DENIED", "The caller does not have permission")).toBeUndefined();
+        expect(parseForbiddenQuotaReason(undefined, undefined)).toBeUndefined();
       });
     });
 

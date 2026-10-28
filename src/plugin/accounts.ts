@@ -100,6 +100,53 @@ export function parseRateLimitReason(
   return "UNKNOWN";
 }
 
+// A 403 that carries one of these markers means the account ran out of quota.
+// Retrying the same account or another endpoint cannot help; rotating can.
+const FORBIDDEN_QUOTA_MARKERS = [
+  "resource_exhausted",
+  "resource exhausted",
+  "resource has been exhausted",
+  "quota_exceeded",
+  "quota exceeded",
+  "exceeded your current quota",
+  "rate limit exceeded",
+]
+
+/**
+ * Classifies a 403 body. Google reports exhausted quota as
+ * `403 RESOURCE_EXHAUSTED` rather than 429, which the 429 handler never sees, so
+ * the response used to reach the session as a bare "Forbidden".
+ *
+ * Returns `undefined` for verification challenges and for genuinely forbidden
+ * requests, which need their own handling.
+ */
+export function parseForbiddenQuotaReason(
+  reason: string | undefined,
+  message: string | undefined,
+  rawBody?: string,
+): RateLimitReason | undefined {
+  const text = [reason, message, rawBody]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return undefined;
+
+  // Google asks for account verification with 403 too; that is not a quota.
+  if (text.includes("validation_required") || text.includes("accounts.google.com/")) {
+    return undefined;
+  }
+
+  if (text.includes("insufficient_g1_credits_balance") || text.includes("g1 credits balance")) {
+    return "QUOTA_EXHAUSTED";
+  }
+
+  if (FORBIDDEN_QUOTA_MARKERS.some((marker) => text.includes(marker))) {
+    return "QUOTA_EXHAUSTED";
+  }
+
+  return undefined;
+}
+
 export function calculateBackoffMs(
   reason: RateLimitReason,
   consecutiveFailures: number,

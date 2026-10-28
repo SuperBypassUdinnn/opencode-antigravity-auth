@@ -17,6 +17,7 @@ import { AntigravityV2Plugin } from "./v2.ts"
 import { AntigravityAccountsRpc } from "./plugin/account-rpc.ts"
 import { accountID, accountPoolIdentity } from "./plugin/account-management.ts"
 import { AccountManager } from "./plugin/accounts.ts"
+import { discoveryGate } from "./plugin/discovery-gate.ts"
 import type { AvailableModel } from "./plugin/quota.ts"
 import { createAntigravityPlugin } from "./plugin.ts"
 import { ANTIGRAVITY_REDIRECT_URI } from "./constants.ts"
@@ -271,6 +272,9 @@ async function stream(sdk: ReturnType<typeof import("@ai-sdk/google")["createGoo
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The gate is process-wide; a sweep left behind by another test must not
+  // block this one.
+  discoveryGate.reset()
   state.storage = pool()
   state.callback = undefined
   state.exchange.mockResolvedValue({ type: "success", refresh: "new-refresh|project", access: "new-access", expires: 12345, projectId: "project", email: "second@example.test" })
@@ -278,6 +282,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
+  discoveryGate.reset()
   vi.restoreAllMocks()
 })
 
@@ -380,7 +385,9 @@ describe("OpenCode V2 adapter", () => {
     })
     const id = accountID(state.storage!.accounts[0]!)
     const adapter = await host({ discoverModels: true, connection: false })
-    expect(state.storage?.accounts[0]).toMatchObject({ id, refreshToken: "rotated" })
+    // Discovery runs after setup so it cannot block the client; wait for the
+    // sweep it started.
+    await vi.waitFor(() => expect(state.storage?.accounts[0]?.refreshToken).toBe("rotated"))
     expect(adapter.storage.get("model-catalog")).toMatchObject({ version: 3, identity: accountPoolIdentity(state.storage!.accounts), accounts: { "antigravity-gemini-3.8-flash-high": [id] } })
   })
 
@@ -648,7 +655,7 @@ describe("discovery and account eligibility regressions", () => {
       return Response.json({ buckets: [] })
     })
     await host({ discoverModels: true, connection: false })
-    expect(state.storage?.accounts[0]?.refreshToken).toBe("rotated")
+    await vi.waitFor(() => expect(state.storage?.accounts[0]?.refreshToken).toBe("rotated"))
   })
 
   it("does not overwrite discovery rotation when retiring the existing manager", async () => {
@@ -814,9 +821,13 @@ describe("quota credential regressions", () => {
     })
     const adapter = await host({ discoverModels: true, connection: false })
     const storage = await import("./plugin/storage.ts")
-    const latest = await storage.loadAccounts()
-    expect(latest!.accounts).toHaveLength(1)
-    expect(latest!.accounts[0]!.refreshToken).toBe("rotated-failed-discovery")
+    // Discovery runs after setup so it cannot block the client; wait for the
+    // sweep it started.
+    await vi.waitFor(async () => {
+      const latest = await storage.loadAccounts()
+      expect(latest!.accounts).toHaveLength(1)
+      expect(latest!.accounts[0]!.refreshToken).toBe("rotated-failed-discovery")
+    })
   })
 
   it("keeps quota-refreshed credentials when the active manager is retired", async () => {
@@ -1213,11 +1224,12 @@ describe("independent concurrent discovery", () => {
     const context = { signal: new AbortController().signal, error: () => { throw new Error("Unexpected RPC error") } }
     const older = adapter.accountHandlers!.models({}, context)
     await started
-    try {
-      await adapter.accountHandlers!.update({ id: secondID, action: "enable" }, context)
-      expect(adapter.storage.get("model-catalog")).toMatchObject({ models: { "claude-sonnet-5-5-high": {} } })
-    } finally { release() }
-    await older
+    // Enabling an account asks for a refresh. Sweeps are serialized, so that
+    // request queues behind the running sweep rather than starting a rival one
+    // that could publish a catalog from the older account pool.
+    const enable = adapter.accountHandlers!.update({ id: secondID, action: "enable" }, context)
+    release()
+    await Promise.all([older, enable])
     expect(adapter.storage.get("model-catalog")).toMatchObject({ models: { "claude-sonnet-5-5-high": {} }, accounts: { "antigravity-claude-sonnet-5-5-high": [secondID] } })
   })
 })
@@ -1437,12 +1449,11 @@ describe("final async boundary audit", () => {
     const context = { signal: new AbortController().signal, error: () => { throw new Error("Unexpected RPC error") } }
     const older = adapter.accountHandlers!.models({}, context)
     await writing
-    try {
-      await adapter.accountHandlers!.models({}, context)
-      expect(adapter.storage.get("model-catalog")).toMatchObject({ models: { "gemini-3-flash": {} } })
-      expect((adapter.storage.get("model-catalog") as { models: Record<string, unknown> }).models).not.toHaveProperty("claude-sonnet-5-5-high")
-    } finally { release() }
-    await older
+    // The second request queues behind the sweep that is still writing its
+    // cache, so the catalog published last is the one from the fresher sweep.
+    const latest = adapter.accountHandlers!.models({}, context)
+    release()
+    await Promise.all([older, latest])
     const cached = adapter.storage.get("model-catalog") as { models: Record<string, AvailableModel>; accounts: Record<string, string[]> }
     expect.soft(cached.models).not.toHaveProperty("claude-sonnet-5-5-high")
     const restarted = await host({ connection: false, catalog: cached.models, catalogAccounts: cached.accounts })

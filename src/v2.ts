@@ -12,6 +12,7 @@ import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, ModelCatal
 import { accountID, accountPoolIdentity, accountCredentialsIdentity, loadManagedAccounts, registerAccountManagement } from "./plugin/account-management.ts"
 import { checkAccountsQuota, type AvailableModel } from "./plugin/quota.ts"
 import { createLogger } from "./plugin/logger.ts"
+import { DISCOVERY_MIN_INTERVAL_MS, discoveryGate } from "./plugin/discovery-gate.ts"
 import { ensureProjectContext } from "./plugin/project.ts"
 import { executeSearch, type SearchArgs } from "./plugin/search.ts"
 import { startOAuthListener, type OAuthListener } from "./plugin/server.ts"
@@ -79,6 +80,11 @@ function isAntigravityCredential(value: Credential.Value | undefined, accounts: 
   // V1 migration imports generic OAuth credentials; the pool establishes ownership.
   return value.methodID === "oauth" && (typeof boundID === "string"
     || accounts.some(account => matchesAccountToken(account, parseRefreshParts(value.refresh).refreshToken)))
+}
+
+/** Identifies a catalog by the models it publishes; only a changed set needs a reload. */
+function catalogSignature(definitions: Record<string, unknown>): string {
+  return Object.keys(definitions).sort().join("\n")
 }
 
 /** OpenCode 2.1's source transforms and AI SDK 3 transport adapter. */
@@ -171,6 +177,7 @@ export const AntigravityV2Plugin = Plugin.define({
       // the newest complete discovery for this pool may replace the catalog.
       if (disposed || discovery !== discoveryGeneration || accountPoolIdentity(latest?.accounts ?? []) !== accountPoolIdentity(accounts)) return Object.keys(modelDefinitions).length
       if (!successful.length) throw new Error(results.find(result => result.error)?.error ?? "Google did not return a model catalog. Check account access and try again.")
+      const previousSignature = catalogSignature(modelDefinitions)
       modelDefinitions = buildAccountModelDefinitions(models)
       modelAccounts = eligibleAccounts
       accountCatalogLoaded = true
@@ -178,14 +185,51 @@ export const AntigravityV2Plugin = Plugin.define({
       const writing = writeCatalog()
       catalogWrites.add(writing)
       try { await writing } finally { catalogWrites.delete(writing) }
-      await ctx.provider.reload()
+      // A reload re-enters setup. Skip it when the published model set is
+      // unchanged, so a quota-only refresh cannot trigger that cycle.
+      if (catalogSignature(modelDefinitions) !== previousSignature) await ctx.provider.reload()
       return Object.keys(modelDefinitions).length
     }
-    const refreshModels = () => {
-      if (disposed) return Promise.reject(new Error("Antigravity plugin has been disposed"))
-      const discovering = discoverModels()
+    let discoveryTail: Promise<unknown> = Promise.resolve()
+    /** The last sweep started recently enough to make another one redundant. */
+    const discoveryRecentlyStarted = async (): Promise<boolean> => {
+      const startedAt = await ctx.storage.get("discovery-started-at")
+      return typeof startedAt === "number" && Date.now() - startedAt < DISCOVERY_MIN_INTERVAL_MS
+    }
+    /**
+     * Runs discovery sweeps one at a time, in request order.
+     *
+     * A sweep refreshes every saved account's credential, and each write reloads
+     * providers, which runs this setup again. Overlapping sweeps kept re-entering
+     * setup and never settled, so every caller queues here instead of starting a
+     * rival sweep. An automatic call is skipped when the last sweep started
+     * recently, which keeps a burst of reloads from chaining into more sweeps.
+     *
+     * A caller in a newer setup shares the running sweep instead of queueing a
+     * second one behind it: the running sweep refreshes the same accounts and its
+     * own reload publishes the catalog, so another sweep would only add work.
+     */
+    const refreshModels = (options: { force?: boolean } = {}): Promise<number> => {
+      const run = async (): Promise<number> => {
+        if (disposed) throw new Error("Antigravity plugin has been disposed")
+        if (!options.force && await discoveryRecentlyStarted()) return Object.keys(modelDefinitions).length
+        const lease = discoveryGate.tryStart()
+        if (!lease) {
+          log.debug("Model discovery is already running in another setup")
+          return Object.keys(modelDefinitions).length
+        }
+        try {
+          await ctx.storage.set("discovery-started-at", Date.now())
+          return await discoverModels()
+        } finally {
+          discoveryGate.finish(lease)
+        }
+      }
+      const discovering = discoveryTail.then(run, run)
+      discoveryTail = discovering.then(() => undefined, () => undefined)
       discoveries.add(discovering)
-      void discovering.then(() => discoveries.delete(discovering), () => discoveries.delete(discovering))
+      const release = () => discoveries.delete(discovering)
+      void discovering.then(release, release)
       return discovering
     }
     const listeners = new Set<OAuthListener>()
@@ -521,10 +565,17 @@ export const AntigravityV2Plugin = Plugin.define({
 
       connectionEvents = (async () => {
         for await (const event of ctx.event.subscribe({ signal: lifetime.signal })) {
-          if (event.type === "credential.updated" || event.type === "integration.updated"
-            || (event.type === "credential.switched" && event.data.integrationID === PROVIDER_ID)) {
-            await refreshModelAccess(true)
+          const relevant = event.type === "credential.updated" || event.type === "integration.updated"
+            || (event.type === "credential.switched" && event.data.integrationID === PROVIDER_ID)
+          if (!relevant) continue
+          // A sweep rewrites one credential per account. Reloading on each write
+          // re-enters setup while the sweep is still running, so wait for the
+          // reload the sweep performs once its catalog is stored.
+          if (discoveryGate.running) {
+            log.debug("Deferring model reload while accounts are discovered", { event: event.type })
+            continue
           }
+          await refreshModelAccess(true)
         }
       })().catch(error => {
         if (!disposed) log.warn("Google connection event stream stopped", { error: String(error) })
@@ -641,15 +692,17 @@ export const AntigravityV2Plugin = Plugin.define({
       registrations.push(await registerAccountManagement(ctx, client, async () => {
         invalidateLoader()
         await transport.flush?.()
-      }, refreshModels, async () => {
+      }, () => refreshModels({ force: true }), async () => {
         hasSavedAccounts = (await loadAccounts())?.accounts.some(account => account.enabled !== false)
         if (hasSavedAccounts && ctx.options.discoverModels !== false) {
-          try { await refreshModels() } catch (error) { log.warn("Model refresh unavailable", { error: String(error) }) }
+          try { await refreshModels({ force: true }) } catch (error) { log.warn("Model refresh unavailable", { error: String(error) }) }
         }
         await ctx.provider.reload()
       }, runCredentialOperation))
       if (hasSavedAccounts && ctx.options.discoverModels !== false && (!validCache || Date.now() - (cached?.updatedAt ?? 0) > 3600_000)) {
-        try { await refreshModels() } catch (error) { log.warn("Model discovery unavailable; using cached or fallback models", { error: String(error) }) }
+        // Setup must not wait for a sweep over every saved account: each account
+        // refresh triggers a provider reload that runs setup again.
+        void refreshModels().catch(error => log.warn("Model discovery unavailable; using cached or fallback models", { error: String(error) }))
       }
       return cleanup
     } catch (error) {

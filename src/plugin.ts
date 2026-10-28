@@ -40,7 +40,7 @@ import { EmptyResponseError } from "./plugin/errors";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
-import { AccountManager, type ModelFamily, parseRateLimitReason, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
+import { AccountManager, type ModelFamily, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
 import { loadConfig, initRuntimeConfig, type AntigravityConfig } from "./plugin/config";
 import { createSessionRecoveryHook, getRecoverySuccessToast } from "./plugin/recovery";
@@ -1046,6 +1046,34 @@ async function extractRetryInfoFromBody(response: Response): Promise<RateLimitBo
   }
 }
 
+/** Reads the same fields from a body that was already cloned for other checks. */
+function parseBodyInfoFromText(text: string): RateLimitBodyInfo {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return { retryDelayMs: null };
+  try {
+    return extractRateLimitBodyInfo(JSON.parse(trimmed) as unknown);
+  } catch {
+    return { retryDelayMs: null };
+  }
+}
+
+interface QuotaExhaustion {
+  quotaName: string;
+  model?: string | null;
+  /** Timestamp the provider reported for the reset, when it sent one. */
+  resetAt?: string;
+  /** The provider's own wording, kept for the final error. */
+  detail?: string;
+}
+
+function buildQuotaExhaustedMessage(quota: QuotaExhaustion, accountCount: number): string {
+  const target = quota.model ? ` for ${quota.model}` : "";
+  const reset = quota.resetAt ? ` Quota resets at ${quota.resetAt}.` : "";
+  const detail = quota.detail ? ` Provider message: ${quota.detail}` : "";
+  return `Google quota exhausted${target}: all ${accountCount} connected account(s) ran out of ${quota.quotaName} quota.${reset} `
+    + `Add another account with \`opencode auth login\` or wait for the quota to reset.${detail}`;
+}
+
 function formatWaitTime(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.ceil(ms / 1000);
@@ -1560,7 +1588,23 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
           let lastFailure: FailureContext | null = null;
           let lastError: Error | null = null;
+          // Proven quota exhaustion is worth its own error: the raw 403 tells the
+          // user nothing about the quota or the reset time.
+          let quotaExhausted: QuotaExhaustion | null = null;
+          // Provider wording from the last non-quota 403, if any.
+          let forbiddenDetail: string | undefined;
           const abortSignal = init?.signal ?? undefined;
+
+          const forbiddenError = (accountCount: number): Error | undefined => {
+            if (quotaExhausted) {
+              // `accountCount` only counts the accounts still eligible, so an
+              // exhausted pool would be understated; report every enabled account.
+              const connected = Math.max(accountCount, accountManager.getEnabledAccounts().length);
+              return new Error(buildQuotaExhaustedMessage(quotaExhausted, connected));
+            }
+            if (forbiddenDetail) return new Error(`Google rejected the request: ${forbiddenDetail}`);
+            return undefined;
+          };
 
           // Helper to check if request was aborted
           const checkAborted = () => {
@@ -1612,6 +1656,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
           while (true) {
             // Check for abort at the start of each iteration
             checkAborted();
+            quotaExhausted = null;
+            forbiddenDetail = undefined;
             
             const accountCount = accountManager.getEnabledAccounts().filter(eligible).length;
             const routingDecision = resolveHeaderRoutingDecision(urlString, family, config);
@@ -2350,6 +2396,62 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     shouldSwitchAccount = true;
                     break;
                   }
+
+                  // Google reports exhausted quota as 403 RESOURCE_EXHAUSTED, so
+                  // the 429 handler never sees it. Returning the response as-is
+                  // reached the session as a bare "Forbidden"; rotating and
+                  // explaining the quota is the only useful recovery.
+                  const bodyInfo = parseBodyInfoFromText(errorBodyText);
+                  const quotaReason = parseForbiddenQuotaReason(
+                    bodyInfo.reason,
+                    bodyInfo.message ?? extracted.message,
+                    errorBodyText,
+                  );
+
+                  if (quotaReason === "QUOTA_EXHAUSTED") {
+                    const quotaName = headerStyle === "antigravity" ? "Antigravity" : "Gemini CLI";
+                    const retryAfterMs = bodyInfo.retryDelayMs
+                      ?? (config.default_retry_after_seconds ?? 60) * 1000;
+                    const cooldownMs = accountManager.markRateLimitedWithReason(
+                      account,
+                      family,
+                      headerStyle,
+                      model,
+                      "QUOTA_EXHAUSTED",
+                      retryAfterMs,
+                    );
+                    getHealthTracker().recordRateLimit(account.index);
+                    quotaExhausted = {
+                      quotaName,
+                      model,
+                      resetAt: bodyInfo.quotaResetTime,
+                      detail: bodyInfo.message ?? extracted.message,
+                    };
+
+                    const label = account.email || `Account ${account.index + 1}`;
+                    const resetSuffix = bodyInfo.quotaResetTime
+                      ? ` Quota resets at ${bodyInfo.quotaResetTime}.`
+                      : "";
+                    if (accountManager.shouldShowAccountToast(account.index, 60000)) {
+                      await showToast(
+                        `${label}: ${quotaName} quota exhausted.${resetSuffix} ${accountCount > 1 ? "Switching account..." : "Waiting for the quota to reset..."}`,
+                        "warning",
+                      );
+                      accountManager.markToastShown(account.index);
+                    }
+
+                    pushDebug(
+                      `quota-exhausted-403: idx=${account.index} reset=${bodyInfo.quotaResetTime ?? "unknown"} backoffMs=${cooldownMs} reason=${quotaReason}`,
+                    );
+
+                    lastFailure = createFailureContext(response);
+                    shouldSwitchAccount = true;
+                    break;
+                  }
+
+                  // Any other 403 keeps its provider wording so the session does
+                  // not receive a bare status text if every endpoint fails.
+                  forbiddenDetail = bodyInfo.message ?? extracted.message ?? forbiddenDetail;
                 }
 
                 const shouldRetryEndpoint = (
@@ -2448,6 +2550,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   emptyResponseAttempts.delete(emptyAttemptKeyClean);
                 }
                 
+                // A non-quota 403 on the last endpoint used to fall through and
+                // reach the session as a bare "Forbidden". Surface what Google
+                // actually said; on several accounts this still rotates first.
+                if (response.status === 403 && forbiddenDetail) {
+                  throw new Error(`Google rejected the request: ${forbiddenDetail}`);
+                }
+
                 const transformedResponse = await transformAntigravityResponse(
                   response,
                   prepared.streaming,
@@ -2537,6 +2646,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
             if (shouldSwitchAccount) {
               // Avoid tight retry loops when there's only one account.
               if (accountCount <= 1) {
+                const forbidden = forbiddenError(accountCount);
+                if (forbidden) throw forbidden;
                 if (lastFailure) {
                   return transformAntigravityResponse(
                     lastFailure.response,
@@ -2561,6 +2672,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
             }
 
             // If we get here without returning, something went wrong
+            const forbidden = forbiddenError(accountCount);
+            if (forbidden) throw forbidden;
             if (lastFailure) {
               return transformAntigravityResponse(
                 lastFailure.response,
@@ -3532,4 +3645,6 @@ export const __testExports = {
   getHeaderStyleFromUrl,
   resolveHeaderRoutingDecision,
   resolveQuotaFallbackHeaderStyle,
+  parseBodyInfoFromText,
+  buildQuotaExhaustedMessage,
 };
