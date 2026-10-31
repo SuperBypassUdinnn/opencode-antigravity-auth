@@ -2161,13 +2161,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Track capacity retries per endpoint to prevent infinite loops
             let capacityRetryCount = 0;
             let lastEndpointIndex = -1;
+            // Track network error retries separately
+            let networkRetryCount = 0;
+            let lastNetworkErrorEndpoint = -1;
             
             const endpoints = getEndpointFallbacks(headerStyle);
             for (let i = 0; i < endpoints.length; i++) {
+              // Check abort at the start of each endpoint iteration
+              checkAborted();
+              
               // Reset capacity retry counter when switching to a new endpoint
               if (i !== lastEndpointIndex) {
                 capacityRetryCount = 0;
                 lastEndpointIndex = i;
+              }
+              // Reset network retry counter when switching to a new endpoint
+              if (i !== lastNetworkErrorEndpoint) {
+                networkRetryCount = 0;
+                lastNetworkErrorEndpoint = i;
               }
 
               const currentEndpoint = endpoints[i];
@@ -2685,6 +2696,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   if (!forceThinkingRecovery) {
                     pushDebug("thinking-recovery: API error detected, retrying with forced recovery");
                     forceThinkingRecovery = true;
+                    // Reset retry counters since we're restarting the endpoint loop
+                    capacityRetryCount = 0;
+                    networkRetryCount = 0;
                     i = -1; // Will become 0 after loop increment, restart endpoint loop
                     continue;
                   }
@@ -2715,13 +2729,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   // Exponential backoff for network errors: 1s → 2s → 4s → 8s (max)
                   const baseDelayMs = 1000;
                   const maxDelayMs = 8000;
-                  const exponentialDelay = Math.min(baseDelayMs * Math.pow(2, capacityRetryCount), maxDelayMs);
+                  const exponentialDelay = Math.min(baseDelayMs * Math.pow(2, networkRetryCount), maxDelayMs);
                   // Add ±10% jitter to prevent thundering herd
                   const jitter = exponentialDelay * (0.9 + Math.random() * 0.2);
                   const waitMs = Math.round(jitter);
                   const waitSec = Math.round(waitMs / 1000);
                   
-                  pushDebug(`Network error on account ${account.index}, endpoint ${currentEndpoint}: ${error instanceof Error ? error.message : String(error)}. Exponential backoff ${waitMs}ms (attempt ${capacityRetryCount + 1})`);
+                  pushDebug(`Network error on account ${account.index}, endpoint ${currentEndpoint}: ${error instanceof Error ? error.message : String(error)}. Exponential backoff ${waitMs}ms (attempt ${networkRetryCount + 1})`);
 
                   await showToast(
                     `⏳ Network error. Retrying in ${waitSec}s...`,
@@ -2731,8 +2745,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   await sleep(waitMs, abortSignal);
                   
                   // Retry the same endpoint up to max retries
-                  if (capacityRetryCount < 3) {
-                    capacityRetryCount++;
+                  if (networkRetryCount < 3) {
+                    networkRetryCount++;
                     i -= 1; // Retry same endpoint (i++ in loop will bring it back)
                     continue;
                   } else {
