@@ -134,7 +134,7 @@ async function host(options: { value?: Credential.Value; connection?: boolean; n
   const record = { provider, models }
   const storage = new Map<string, unknown>()
   const events = new EventEmitter<{ event: [V2Event] }>()
-  if (options.catalog) storage.set("model-catalog", { version: 3, identity: accountPoolIdentity(state.storage?.accounts ?? []), updatedAt: Date.now(), models: options.catalog, accounts: options.catalogAccounts ?? {} })
+  if (options.catalog) storage.set("model-catalog", { version: 4, identity: accountPoolIdentity(state.storage?.accounts ?? []), updatedAt: Date.now(), models: options.catalog, accounts: options.catalogAccounts ?? {} })
   let method: OAuthMethod | undefined
   let sdkHook: ((event: AISDKHooks["sdk"]) => Promise<void> | void) | undefined
   let modelTransform: ((editor: ModelEditor) => void) | undefined
@@ -388,7 +388,7 @@ describe("OpenCode V2 adapter", () => {
     // Discovery runs after setup so it cannot block the client; wait for the
     // sweep it started.
     await vi.waitFor(() => expect(state.storage?.accounts[0]?.refreshToken).toBe("rotated"))
-    expect(adapter.storage.get("model-catalog")).toMatchObject({ version: 3, identity: accountPoolIdentity(state.storage!.accounts), accounts: { "antigravity-gemini-3.8-flash-high": [id] } })
+    expect(adapter.storage.get("model-catalog")).toMatchObject({ version: 4, identity: accountPoolIdentity(state.storage!.accounts), accounts: { "antigravity-gemini-3.8-flash-high": [id] } })
   })
 
   it("sends a discovered model only through an account advertising it", async () => {
@@ -400,6 +400,22 @@ describe("OpenCode V2 adapter", () => {
     const tokenRequests = network.mock.calls.filter(([input]) => String(input).includes("oauth2.googleapis.com/token"))
     expect(tokenRequests).toHaveLength(1)
     expect(String(tokenRequests[0]?.[1]?.body)).toContain("refresh_token=second")
+  })
+
+  it("publishes a per-tier-only family as one model with tier variants", async () => {
+    const id = accountID(state.storage!.accounts[0]!)
+    const adapter = await host({
+      connection: false,
+      catalog: {
+        "gemini-3.8-flash-low": { displayName: "Gemini 3.8 Flash (Low)" },
+        "gemini-3.8-flash-medium": { displayName: "Gemini 3.8 Flash (Medium)" },
+        "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)" },
+      },
+      catalogAccounts: { "antigravity-gemini-3.8-flash": [id] },
+    })
+    expect(adapter.models.has("antigravity-gemini-3.8-flash-high")).toBe(false)
+    expect(adapter.models.get("antigravity-gemini-3.8-flash")?.variants.map(variant => variant.id)).toEqual(["low", "medium", "high"])
+    await expect(adapter.sdk("antigravity-gemini-3.8-flash")).resolves.toBeDefined()
   })
 
   it("disables retired models from legacy config instead of exposing a native Google route", async () => {
@@ -726,17 +742,21 @@ describe("discovery and account eligibility regressions", () => {
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = input instanceof Request ? input.url : String(input)
       if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: `access-${new URLSearchParams(String(init?.body)).get("refresh_token")}`, expires_in: 3600 })
-      if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3.8-flash-low": {} } })
+      if (url.endsWith(":fetchAvailableModels")) {
+        const auth = new Headers(init?.headers).get("authorization") ?? ""
+        return Response.json({ models: auth.includes("only-high") ? { "gemini-3.8-flash-high": {} } : { "gemini-3-flash": {} } })
+      }
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const highAccount = accountID(state.storage!.accounts[1]!)
-    const adapter = await host({ connection: false, discoverModels: true, catalog: { "gemini-3.8-flash-high": {}, "gemini-3.8-flash-low": {} }, catalogAccounts: { [model]: [highAccount], "antigravity-gemini-3.8-flash-low": [accountID(state.storage!.accounts[0]!)] } })
+    const lowAccount = accountID(state.storage!.accounts[0]!)
+    const adapter = await host({ connection: false, discoverModels: true, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { [model]: [highAccount] } })
     const { sdk } = await adapter.sdk(model)
     await stream(sdk, model)
     const context = { signal: new AbortController().signal, error: () => { throw new Error("Unexpected RPC error") } }
     await adapter.accountHandlers!.update({ id: highAccount, action: "disable" }, context)
-    expect(adapter.storage.get("model-catalog")).toMatchObject({ accounts: { "antigravity-gemini-3.8-flash-low": [accountID(state.storage!.accounts[0]!)] } })
+    expect(adapter.storage.get("model-catalog")).toMatchObject({ accounts: { "antigravity-gemini-3-flash": [lowAccount] } })
     network.mockClear()
     await expect(stream(sdk, model)).rejects.toThrow(/unavailable|access/)
   })

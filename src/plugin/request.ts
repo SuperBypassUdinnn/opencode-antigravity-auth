@@ -63,6 +63,7 @@ import {
   resolveModelWithTier,
   resolveModelWithVariant,
   resolveModelForHeaderStyle,
+  applyTierModelSuffix,
   isClaudeModel,
   isClaudeThinkingModel,
   CLAUDE_THINKING_MAX_OUTPUT_TOKENS,
@@ -842,6 +843,18 @@ export function prepareAntigravityRequest(
       const isWrapped = typeof parsedBody.project === "string" && "request" in parsedBody;
 
       if (isWrapped) {
+        // A pre-wrapped body carries its own thinking level. A per-tier-only
+        // family still needs the matching backend ID, so resolve it here before
+        // the envelope is forwarded.
+        const wrappedRequest = parsedBody.request as Record<string, unknown> | undefined;
+        const wrappedThinking = (wrappedRequest?.generationConfig as Record<string, unknown> | undefined)
+          ?.thinkingConfig as Record<string, unknown> | undefined;
+        if (headerStyle === "antigravity") {
+          effectiveModel = applyTierModelSuffix(
+            effectiveModel,
+            typeof wrappedThinking?.thinkingLevel === "string" ? wrappedThinking.thinkingLevel : tierThinkingLevel,
+          );
+        }
         const wrappedBody = {
           ...parsedBody,
           model: effectiveModel,
@@ -944,6 +957,13 @@ export function prepareAntigravityRequest(
             tierThinkingBudget = variantConfig.thinkingBudget;
             tierThinkingLevel = undefined;
           }
+        }
+
+        if (headerStyle === "antigravity") {
+          // The selected variant decides the backend ID for a family Google only
+          // publishes per tier (e.g. gemini-3.8-flash); its bare base ID is not a
+          // valid model and is rejected with 404.
+          effectiveModel = applyTierModelSuffix(effectiveModel, tierThinkingLevel);
         }
 
         if (isClaude) {

@@ -32,6 +32,31 @@ describe("OpenCode V2 models", () => {
       variants: [],
     })
     expect(resolveModelForHeaderStyle("antigravity-gemini-3.9-flash-medium", "antigravity").actualModel).toBe("gemini-3.9-flash-medium")
-    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash-high"]).toBeDefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash"]?.variants).toEqual([
+      { id: "low", settings: { thinkingConfig: { thinkingLevel: "low" } } },
+      { id: "medium", settings: { thinkingConfig: { thinkingLevel: "medium" } } },
+      { id: "high", settings: { thinkingConfig: { thinkingLevel: "high" } } },
+    ])
+  })
+
+  it("collapses per-tier catalog families into one model with a variant per tier", () => {
+    const catalog = buildAccountModelDefinitions({
+      "gemini-3.8-flash-low": { displayName: "Gemini 3.8 Flash (Low)", maxTokens: 1048576, maxOutputTokens: 65536 },
+      "gemini-3.8-flash-medium": { displayName: "Gemini 3.8 Flash (Medium)", maxTokens: 1048576, maxOutputTokens: 65536 },
+      "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)", maxTokens: 1048576, maxOutputTokens: 65536 },
+    })
+
+    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-3.8-flash"])
+    expect(catalog["antigravity-gemini-3.8-flash"]).toMatchObject({
+      name: "Gemini 3.8 Flash (Antigravity)",
+      limit: { context: 1048576, output: 65536 },
+      variants: [
+        { id: "low", settings: { thinkingConfig: { thinkingLevel: "low" } } },
+        { id: "medium", settings: { thinkingConfig: { thinkingLevel: "medium" } } },
+        { id: "high", settings: { thinkingConfig: { thinkingLevel: "high" } } },
+      ],
+    })
+    expect(catalog["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
   })
 })

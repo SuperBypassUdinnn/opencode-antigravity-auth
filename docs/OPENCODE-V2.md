@@ -20,11 +20,13 @@ checkout, run `npm ci && npm run build` and put its absolute directory in
 Models are discovered from the enabled accounts' `fetchAvailableModels` response.
 The catalog follows `agentModelSorts` and `tieredModelIds`, excluding disabled,
 internal, image-generation, and retired alias entries. Names and token limits
-come from Google; backend tier suffixes are preserved. Model routing selects only
-accounts advertising the requested model. Results are cached for an
-hour, keyed to the enabled account pool. `/antigravity` → **Refresh available
-models** updates the catalog immediately. If discovery fails, the last known
-catalog or a small fallback catalog remains usable.
+come from Google. A family published only as per-tier IDs (Gemini 3.8 Flash:
+`-low`, `-medium`, `-high`, with no bare ID) is published as one model whose
+variant selects the backend tier ID; every other backend suffix is preserved.
+Model routing selects only accounts advertising the requested model. Results are
+cached for an hour, keyed to the enabled account pool. `/antigravity` → **Refresh
+available models** updates the catalog immediately. If discovery fails, the last
+known catalog or a small fallback catalog remains usable.
 
 Manual overrides belong under `providers`:
 
@@ -144,7 +146,7 @@ checks all three modes against a freshly installed npm archive. Set
 Authenticated checks are separate:
 
 ```bash
-opencode run --model=google/antigravity-gemini-3.8-flash-high "Reply exactly WORKING"
+opencode run --model=google/antigravity-gemini-3.8-flash#high "Reply exactly WORKING"
 opencode run --model=google/antigravity-claude-opus-4-6-thinking#max "Reply exactly WORKING"
 ```
 
@@ -154,7 +156,7 @@ opencode run --model=google/antigravity-claude-opus-4-6-thinking#max "Reply exac
 
 - OpenCode 2.1.2: typecheck and build pass; 1,182 automated tests pass.
 - Seven models from the signed-in account's selectable inventory return actual
-  assistant text: Gemini 3.8 Flash low/medium/high, Gemini 3.5 Flash Lite,
+  assistant text: Gemini 3.8 Flash (low, medium, and high variants), Gemini 3.5 Flash Lite,
   Claude Sonnet 4.6, Claude Opus 4.6 Thinking, and GPT-OSS 120B Medium.
   A later Claude rerun reached the default 90% soft quota guard; the guard was
   kept enabled. Both Claude models had passed authenticated checks earlier.

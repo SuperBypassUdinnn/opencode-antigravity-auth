@@ -167,6 +167,49 @@ export function isAdvertisedTierSuffixModel(model: string): boolean {
 }
 
 /**
+ * Families whose backend IDs are per-tier only (e.g. gemini-3.8-flash-low,
+ * -medium, -high) with no bare base ID, mapped to the tiers that family actually
+ * publishes. The plugin publishes one model for such a family, so the selected
+ * variant has to select the backend ID.
+ *
+ * gemini-3.8-flash is seeded because it is a known family before discovery runs;
+ * discovered families register themselves so new ones work without a release.
+ */
+const tierSuffixModelFamilies = new Map<string, ReadonlySet<string>>([
+  ["gemini-3.8-flash", new Set<ThinkingTier>(["low", "medium", "high"])],
+]);
+
+/** Tiers tried in order when the requested level is not published for a family. */
+const TIER_FALLBACK_ORDER: readonly ThinkingTier[] = ["low", "medium", "high"];
+
+export function registerTierSuffixModelBases(families: Iterable<readonly [string, Iterable<string>]>): void {
+  for (const [family, tiers] of families) {
+    const base = family.replace(QUOTA_PREFIX_REGEX, "").replace(TIER_REGEX, "").toLowerCase();
+    tierSuffixModelFamilies.set(base, new Set(tiers));
+  }
+}
+
+/**
+ * Selects the backend ID for a per-tier-only family from a thinking level.
+ *
+ * The level already reflects the selected variant, so a family that has one
+ * backend ID per tier must send that ID; the bare base is rejected with 404.
+ * A level the family does not publish falls back to a published tier rather
+ * than emitting an ID that does not exist. Models outside such a family, and
+ * the Gemini CLI route (which appends "-preview" instead), are returned
+ * unchanged.
+ */
+export function applyTierModelSuffix(model: string, level: string | undefined): string {
+  const stripped = model.replace(TIER_REGEX, "");
+  const published = tierSuffixModelFamilies.get(stripped.replace(QUOTA_PREFIX_REGEX, "").toLowerCase());
+  if (!published) return model;
+  const requested = (level ?? "").toLowerCase();
+  if (published.has(requested)) return `${stripped}-${requested}`;
+  const fallback = TIER_FALLBACK_ORDER.find((tier) => published.has(tier));
+  return fallback ? `${stripped}-${fallback}` : model;
+}
+
+/**
  * Resolves a model name with optional tier suffix and quota prefix to its actual API model name
  * and corresponding thinking configuration.
  *

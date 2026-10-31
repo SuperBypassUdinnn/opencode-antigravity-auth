@@ -8,7 +8,7 @@ import { authorizeAntigravity, exchangeAntigravity } from "./antigravity/oauth.t
 import { ANTIGRAVITY_REDIRECT_URI } from "./constants.ts"
 import { createAntigravityPlugin } from "./plugin.ts"
 import { accessTokenExpired, formatRefreshParts, parseRefreshParts } from "./plugin/auth.ts"
-import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, ModelCatalogCacheSchema } from "./plugin/config/models-v2.ts"
+import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, modelKeyMap, ModelCatalogCacheSchema } from "./plugin/config/models-v2.ts"
 import { accountID, accountPoolIdentity, accountCredentialsIdentity, loadManagedAccounts, registerAccountManagement } from "./plugin/account-management.ts"
 import { checkAccountsQuota, type AvailableModel } from "./plugin/quota.ts"
 import { createLogger } from "./plugin/logger.ts"
@@ -148,6 +148,7 @@ export const AntigravityV2Plugin = Plugin.define({
       })
       const successful = results.filter(result => result.quota?.models && Object.keys(result.quota.models).length)
       const models: Record<string, AvailableModel> = {}
+      const accountCatalogs: Array<{ account: string; models: Record<string, AvailableModel> }> = []
       const eligibleAccounts: Record<string, string[]> = {}
       if (discovery === discoveryGeneration) {
         invalidateLoader()
@@ -164,9 +165,7 @@ export const AntigravityV2Plugin = Plugin.define({
           }
           if (account.enabled === false) continue
           if (!result.quota?.models) continue
-          for (const id of Object.keys(buildAccountModelDefinitions(result.quota.models))) {
-            (eligibleAccounts[id] ??= []).push(accountID(account))
-          }
+          accountCatalogs.push({ account: accountID(account), models: result.quota.models })
           for (const [id, model] of Object.entries(result.quota?.models ?? {})) {
             const usable = (value: AvailableModel) => !value.disabled && value.selectable !== false
             if (!models[id] || !usable(models[id]) || usable(model)) models[id] = model
@@ -177,11 +176,20 @@ export const AntigravityV2Plugin = Plugin.define({
       // the newest complete discovery for this pool may replace the catalog.
       if (disposed || discovery !== discoveryGeneration || accountPoolIdentity(latest?.accounts ?? []) !== accountPoolIdentity(accounts)) return Object.keys(modelDefinitions).length
       if (!successful.length) throw new Error(results.find(result => result.error)?.error ?? "Google did not return a model catalog. Check account access and try again.")
+      // Several per-tier catalog IDs can publish as one model, so eligibility is
+      // recorded per published ID against the merged catalog.
+      const keyMap = modelKeyMap(models)
+      for (const catalog of accountCatalogs) {
+        for (const id of Object.keys(catalog.models)) {
+          const key = keyMap.get(id)
+          if (key) (eligibleAccounts[key] ??= []).push(catalog.account)
+        }
+      }
       const previousSignature = catalogSignature(modelDefinitions)
       modelDefinitions = buildAccountModelDefinitions(models)
       modelAccounts = eligibleAccounts
       accountCatalogLoaded = true
-      catalogSnapshot = JSON.parse(JSON.stringify({ version: 3, identity: accountPoolIdentity(latest?.accounts ?? []), updatedAt: Date.now(), models, accounts: eligibleAccounts }))
+      catalogSnapshot = JSON.parse(JSON.stringify({ version: 4, identity: accountPoolIdentity(latest?.accounts ?? []), updatedAt: Date.now(), models, accounts: eligibleAccounts }))
       const writing = writeCatalog()
       catalogWrites.add(writing)
       try { await writing } finally { catalogWrites.delete(writing) }

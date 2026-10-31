@@ -721,6 +721,49 @@ it("removes x-api-key header", () => {
       expect(JSON.parse(result.init.body as string).model).toBe(modelId);
     });
 
+    it("maps a collapsed Flash model's selected variant to the backend tier ID", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.8-flash:generateContent",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: "hi" }] }],
+            providerOptions: { google: { thinkingLevel: "high" } },
+          }),
+        },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "antigravity"
+      );
+      expect(result.effectiveModel).toBe("gemini-3.8-flash-high");
+      expect(JSON.parse(result.init.body as string).model).toBe("gemini-3.8-flash-high");
+    });
+
+    it("defaults a collapsed Flash model without a variant to the low tier ID", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.8-flash:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "antigravity"
+      );
+      expect(result.effectiveModel).toBe("gemini-3.8-flash-low");
+    });
+
+    it("leaves the gemini-cli header style free of tiered catalog rewrites", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "gemini-cli"
+      );
+      expect(result.effectiveModel).toBe("gemini-3.8-flash-preview");
+    });
+
     it("removes x-goog-user-project header for antigravity headerStyle", () => {
       const result = prepareAntigravityRequest(
         "https://generativelanguage.googleapis.com/v1beta/models/claude-opus-4-6-thinking:generateContent",

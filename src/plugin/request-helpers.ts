@@ -798,11 +798,12 @@ export interface VariantThinkingConfig {
  * providerOptions.google. Supports two formats:
  * 
  * 1. Gemini 3 native: { google: { thinkingLevel: "high", includeThoughts: true } }
- * 2. Budget-based (Claude/Gemini 2.5): { google: { thinkingConfig: { thinkingBudget: 32000 } } }
+ * 2. Variant overlay: { google: { thinkingConfig: { thinkingLevel: "high" } } }
+ * 3. Budget-based (Claude/Gemini 2.5): { google: { thinkingConfig: { thinkingBudget: 32000 } } }
  * 
  * When providerOptions is missing or has no thinking config (common with OpenCode
  * model variants), falls back to extracting from generationConfig directly:
- * 3. generationConfig fallback: { thinkingConfig: { thinkingBudget: 8192 } }
+ * 4. generationConfig fallback: { thinkingConfig: { thinkingBudget: 8192 } }
  */
 export function extractVariantThinkingConfig(
   providerOptions: Record<string, unknown> | undefined,
@@ -819,10 +820,14 @@ export function extractVariantThinkingConfig(
       result.thinkingLevel = google.thinkingLevel;
       result.includeThoughts = typeof google.includeThoughts === "boolean" ? google.includeThoughts : undefined;
     } else if (google.thinkingConfig && typeof google.thinkingConfig === "object") {
-      // Budget-based format (Claude/Gemini 2.5): { google: { thinkingConfig: { thinkingBudget } } }
-      // Only used when thinkingLevel is not present
+      // Variant overlays emit { google: { thinkingConfig: { thinkingLevel } } } for
+      // Gemini 3 and { thinkingConfig: { thinkingBudget } } for Claude/Gemini 2.5.
+      // Only used when the flat thinkingLevel is not present.
       const tc = google.thinkingConfig as Record<string, unknown>;
-      if (typeof tc.thinkingBudget === "number") {
+      if (typeof tc.thinkingLevel === "string") {
+        result.thinkingLevel = tc.thinkingLevel;
+        result.includeThoughts = typeof tc.includeThoughts === "boolean" ? tc.includeThoughts : undefined;
+      } else if (typeof tc.thinkingBudget === "number") {
         result.thinkingBudget = tc.thinkingBudget;
       }
     }

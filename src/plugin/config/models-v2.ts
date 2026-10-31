@@ -1,10 +1,10 @@
-import { OPENCODE_MODEL_DEFINITIONS, type OpencodeModelDefinition } from "./models.ts"
+import { OPENCODE_MODEL_DEFINITIONS, type ModelModalities, type ModelThinkingLevel, type OpencodeModelDefinition } from "./models.ts"
 import type { AvailableModel } from "../quota.ts"
-import { registerAdvertisedModelIds } from "../transform/model-resolver.ts"
+import { registerAdvertisedModelIds, registerTierSuffixModelBases } from "../transform/model-resolver.ts"
 import { z } from "zod"
 
 export const ModelCatalogCacheSchema = z.object({
-  version: z.literal(3),
+  version: z.literal(4),
   identity: z.string(), updatedAt: z.number(),
   accounts: z.record(z.string(), z.array(z.string())),
   models: z.record(z.string(), z.object({
@@ -16,16 +16,9 @@ export const ModelCatalogCacheSchema = z.object({
 // Used before login or when discovery is unavailable. Once connected, Google's
 // catalog replaces this list, including model IDs, names and token limits.
 const fallbackModels: Record<string, OpencodeModelDefinition> = Object.fromEntries(
-  ["antigravity-gemini-3-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking"]
+  ["antigravity-gemini-3-flash", "antigravity-gemini-3.8-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking"]
     .flatMap(id => OPENCODE_MODEL_DEFINITIONS[id] ? [[id, OPENCODE_MODEL_DEFINITIONS[id]]] : []),
 )
-for (const tier of ["low", "medium", "high"]) {
-  fallbackModels[`antigravity-gemini-3.8-flash-${tier}`] = {
-    name: `Gemini 3.8 Flash (${tier}) (Antigravity)`,
-    limit: { context: 1048576, output: 65536 },
-    modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-  }
-}
 
 function definition(model: OpencodeModelDefinition) {
   return {
@@ -48,24 +41,108 @@ export const OPENCODE_V2_MODEL_DEFINITIONS = Object.fromEntries(
 )
 export type V2ModelDefinitions = typeof OPENCODE_V2_MODEL_DEFINITIONS
 
+const TIER_ORDER = ["minimal", "low", "medium", "high"] as const
+type CatalogTier = (typeof TIER_ORDER)[number]
+const CATALOG_TIER_SUFFIX = /^(.*)-(minimal|low|medium|high)$/
+const TIER_LABEL = /\s*\((?:minimal|low|medium|high)\)\s*$/i
+
+/** Excludes completion/internal, image-generation, tier routers and disabled entries. */
+function isChatModel(id: string, model: AvailableModel): boolean {
+  return /^(gemini-|claude-|gpt-oss-)/.test(id)
+    && !/image|imagen|-(disabled|tiered)$/.test(id)
+    && !model.disabled
+    && model.selectable !== false
+}
+
+function tierOf(id: string): { base: string; tier: CatalogTier } | undefined {
+  const match = id.match(CATALOG_TIER_SUFFIX)
+  const base = match?.[1]
+  const tier = match?.[2] as CatalogTier | undefined
+  return base && tier ? { base, tier } : undefined
+}
+
+/**
+ * Families the catalog advertises only as per-tier IDs (e.g. gemini-3.8-flash-low,
+ * -medium, -high) with no bare base ID. Two or more published tiers collapse into
+ * one model carrying a variant per tier: the backend rejects the bare base ID, so
+ * the request path rewrites it from the selected variant.
+ */
+function collapsibleFamilies(models: Record<string, AvailableModel>): Map<string, CatalogTier[]> {
+  const tiers = new Map<string, Set<CatalogTier>>()
+  for (const [id, model] of Object.entries(models)) {
+    const parsed = tierOf(id)
+    // A published base ID means the catalog has a real model by that name.
+    if (!parsed || !isChatModel(id, model) || models[parsed.base]) continue
+    let found = tiers.get(parsed.base)
+    if (!found) {
+      found = new Set<CatalogTier>()
+      tiers.set(parsed.base, found)
+    }
+    found.add(parsed.tier)
+  }
+  return new Map([...tiers]
+    .filter(([, found]) => found.size > 1)
+    .map(([base, found]) => [base, TIER_ORDER.filter(tier => found.has(tier))]))
+}
+
+/** Maps every published catalog ID to the model ID this plugin exposes for it. */
+export function modelKeyMap(models: Record<string, AvailableModel>): Map<string, string> {
+  const families = collapsibleFamilies(models)
+  const keys = new Map<string, string>()
+  for (const [id, model] of Object.entries(models)) {
+    if (!isChatModel(id, model)) continue
+    const parsed = tierOf(id)
+    keys.set(id, `antigravity-${parsed && families.has(parsed.base) ? parsed.base : id}`)
+  }
+  return keys
+}
+
+function limitsOf(model: AvailableModel | undefined, known: OpencodeModelDefinition | undefined) {
+  return {
+    context: model?.maxTokens ?? known?.limit.context ?? 200000,
+    output: model?.maxOutputTokens ?? known?.limit.output ?? 64000,
+  }
+}
+
+function modalitiesOf(model: AvailableModel | undefined): ModelModalities {
+  return { input: model?.supportsImages === false ? ["text"] : ["text", "image", "pdf"], output: ["text"] }
+}
+
 export function buildAccountModelDefinitions(models: Record<string, AvailableModel>): V2ModelDefinitions {
   const definitions: V2ModelDefinitions = {}
+  const families = collapsibleFamilies(models)
+  const collapsed = new Set([...families].flatMap(([base, tiers]) => tiers.map(tier => `${base}-${tier}`)))
+
   for (const [id, model] of Object.entries(models)) {
-    // Exclude completion/internal, image-generation, tier routers and explicitly
-    // disabled entries. They are not selectable chat models.
-    if (!/^(gemini-|claude-|gpt-oss-)/.test(id) || /image|imagen|-(disabled|tiered)$/.test(id) || model.disabled || model.selectable === false) continue
+    if (!isChatModel(id, model) || collapsed.has(id)) continue
     const key = `antigravity-${id}`
     const known = OPENCODE_MODEL_DEFINITIONS[key]
     definitions[key] = definition({
       name: `${model.displayName ?? id} (Antigravity)`,
-      limit: {
-        context: model.maxTokens ?? known?.limit.context ?? 200000,
-        output: model.maxOutputTokens ?? known?.limit.output ?? 64000,
-      },
-      modalities: { input: model.supportsImages === false ? ["text"] : ["text", "image", "pdf"], output: ["text"] },
+      limit: limitsOf(model, known),
+      modalities: modalitiesOf(model),
       variants: known?.variants,
     })
   }
+
+  for (const [base, tiers] of families) {
+    const tierModels = tiers.map(tier => models[`${base}-${tier}`])
+    const representative = tierModels[tiers.indexOf("high")] ?? tierModels[0]
+    if (!representative) continue
+    const key = `antigravity-${base}`
+    const known = OPENCODE_MODEL_DEFINITIONS[key]
+    const name = representative.displayName?.replace(TIER_LABEL, "")
+      || known?.name.replace(/\s*\(Antigravity\)$/i, "")
+      || base
+    definitions[key] = definition({
+      name: `${name} (Antigravity)`,
+      limit: limitsOf(representative, known),
+      modalities: modalitiesOf(representative),
+      variants: Object.fromEntries(tiers.map((tier): [string, { thinkingLevel: ModelThinkingLevel }] => [tier, { thinkingLevel: tier }])),
+    })
+  }
+
   registerAdvertisedModelIds(Object.keys(models))
+  registerTierSuffixModelBases(families)
   return definitions
 }

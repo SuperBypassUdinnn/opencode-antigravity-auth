@@ -59,6 +59,23 @@ Gemini 3 models use string-based thinking levels. Available levels differ by mod
 
 > **Note:** The API rejects invalid levels (e.g., `"minimal"` on Pro). Configure variants accordingly.
 
+### Catalog Families Published Per Tier
+
+Some Gemini families arrive from Google's catalog only as per-tier IDs. At the
+time of writing, Gemini 3.8 Flash is published as `gemini-3.8-flash-low`,
+`-medium`, and `-high`, with no bare `gemini-3.8-flash` ID; the backend answers
+404 for that bare ID. The plugin therefore publishes one model,
+`antigravity-gemini-3.8-flash`, whose variant selects the backend ID:
+
+```bash
+opencode run "Hello" --model=google/antigravity-gemini-3.8-flash#high
+```
+
+Without a variant, the request resolves to the `low` tier, the same default the
+plugin applies to other Gemini 3 models. Collapsing happens only when the catalog
+publishes two or more tiers of the same base and no bare base ID, so a family
+that Google publishes directly is never rewritten.
+
 ### Gemini 3 Pro Example
 
 ```json

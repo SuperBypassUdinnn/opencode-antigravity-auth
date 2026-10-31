@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Gemini 3.8 Flash appears as a single model with `low`, `medium`, and `high`
+  variants instead of three separate entries. The selected variant maps to the
+  backend tier model id, since the catalog publishes no bare model id.
+
 ## [2.1.1] - 2026-10-22
 
 ### Fixed

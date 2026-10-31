@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   ADVERTISED_TIER_SUFFIX_MODEL_IDS,
+  applyTierModelSuffix,
   isAdvertisedTierSuffixModel,
+  registerTierSuffixModelBases,
   resolveModelWithTier,
   resolveModelWithVariant,
   resolveModelForHeaderStyle,
@@ -378,5 +380,42 @@ describe("advertised tier-suffix model IDs", () => {
     expect(resolveModelWithTier("claude-opus-4-6-thinking-high").actualModel).toBe("claude-opus-4-6-thinking");
     expect(resolveModelWithTier("gemini-3-pro-high").actualModel).toBe("gemini-3-pro");
     expect(resolveModelForHeaderStyle("gemini-3-pro-high", "antigravity").actualModel).toBe("gemini-3-pro-high");
+  });
+});
+
+describe("tiered catalog families", () => {
+  it("rewrites a collapsed model to the backend tier ID", () => {
+    expect(applyTierModelSuffix("gemini-3.8-flash", "low")).toBe("gemini-3.8-flash-low");
+    expect(applyTierModelSuffix("gemini-3.8-flash", "medium")).toBe("gemini-3.8-flash-medium");
+    expect(applyTierModelSuffix("gemini-3.8-flash", "high")).toBe("gemini-3.8-flash-high");
+  });
+
+  it("replaces an existing tier suffix and strips the quota prefix", () => {
+    expect(applyTierModelSuffix("gemini-3.8-flash-low", "medium")).toBe("gemini-3.8-flash-medium");
+    expect(applyTierModelSuffix("antigravity-gemini-3.8-flash", "high")).toBe("antigravity-gemini-3.8-flash-high");
+  });
+
+  it("falls back to low when the requested level is unknown or missing", () => {
+    expect(applyTierModelSuffix("gemini-3.8-flash", "turbo")).toBe("gemini-3.8-flash-low");
+    expect(applyTierModelSuffix("gemini-3.8-flash", undefined)).toBe("gemini-3.8-flash-low");
+  });
+
+  it("never emits a tier the family does not publish", () => {
+    expect(applyTierModelSuffix("gemini-3.8-flash", "minimal")).toBe("gemini-3.8-flash-low");
+  });
+
+  it("leaves families that publish a real base ID untouched", () => {
+    expect(applyTierModelSuffix("gemini-3-flash", "high")).toBe("gemini-3-flash");
+    expect(applyTierModelSuffix("claude-sonnet-4-6", "high")).toBe("claude-sonnet-4-6");
+  });
+
+  it("registers additional families discovered from the catalog", () => {
+    registerTierSuffixModelBases([
+      ["gemini-9-flash", ["minimal", "low", "high"]],
+      ["antigravity-gemini-9.1-flash", ["low", "medium"]],
+    ]);
+    expect(applyTierModelSuffix("gemini-9-flash", "medium")).toBe("gemini-9-flash-low");
+    expect(applyTierModelSuffix("gemini-9.1-flash", "high")).toBe("gemini-9.1-flash-low");
+    expect(applyTierModelSuffix("gemini-9.1-flash", "minimal")).toBe("gemini-9.1-flash-low");
   });
 });
