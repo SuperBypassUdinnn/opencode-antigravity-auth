@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EmptyResponseError, ToolIdMismatchError } from "./errors";
+import { isNetworkError } from "../plugin.ts";
 
 // ─── EmptyResponseError ───────────────────────────────────────────────────────
 
@@ -101,5 +102,113 @@ describe("ToolIdMismatchError", () => {
     const err = new ToolIdMismatchError(expected, found);
     expect(err.expectedIds).toBe(expected);
     expect(err.foundIds).toBe(found);
+  });
+});
+
+// ─── isNetworkError ─────────────────────────────────────────────────────────────
+
+describe("isNetworkError", () => {
+  it("returns false for null/undefined", () => {
+    expect(isNetworkError(null)).toBe(false);
+    expect(isNetworkError(undefined)).toBe(false);
+  });
+
+  it("returns false for AbortError", () => {
+    const abortError = new DOMException("Aborted", "AbortError");
+    expect(isNetworkError(abortError)).toBe(false);
+  });
+
+  it("detects Node.js ECONNRESET error code", () => {
+    const error = new Error("Connection reset");
+    (error as any).code = "ECONNRESET";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Node.js ECONNREFUSED error code", () => {
+    const error = new Error("Connection refused");
+    (error as any).code = "ECONNREFUSED";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Node.js ETIMEDOUT error code", () => {
+    const error = new Error("Timed out");
+    (error as any).code = "ETIMEDOUT";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Node.js ENOTFOUND error code", () => {
+    const error = new Error("Not found");
+    (error as any).code = "ENOTFOUND";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects TypeError with network message", () => {
+    const error = new TypeError("Network request failed");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects TypeError with fetch message", () => {
+    const error = new TypeError("Failed to fetch");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects TypeError with connection reset message", () => {
+    const error = new TypeError("socket hang up");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Error with connection reset message", () => {
+    const error = new Error("Connection reset by peer");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Error with connection refused message", () => {
+    const error = new Error("Connection refused");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Error with timed out message", () => {
+    const error = new Error("Request timed out");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects Error with network message", () => {
+    const error = new Error("Network error occurred");
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("returns false for regular Error without network message", () => {
+    const error = new Error("Some other error");
+    expect(isNetworkError(error)).toBe(false);
+  });
+
+  it("detects fetch AbortError by name", () => {
+    const error = new Error("Aborted");
+    error.name = "AbortError";
+    expect(isNetworkError(error)).toBe(false);
+  });
+
+  it("detects EAI_SOCKET error code", () => {
+    const error = new Error("EAI_SOCKET");
+    (error as any).code = "EAI_SOCKET";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects EPIPE error code", () => {
+    const error = new Error("EPIPE");
+    (error as any).code = "EPIPE";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects ENOTCONN error code", () => {
+    const error = new Error("ENOTCONN");
+    (error as any).code = "ENOTCONN";
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  it("detects ESHUTDOWN error code", () => {
+    const error = new Error("ESHUTDOWN");
+    (error as any).code = "ESHUTDOWN";
+    expect(isNetworkError(error)).toBe(true);
   });
 });

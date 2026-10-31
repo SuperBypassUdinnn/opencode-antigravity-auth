@@ -1247,6 +1247,89 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
 }
 
 /**
+ * Network error codes that indicate transient connection failures
+ * and should be retried with exponential backoff.
+ */
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED", 
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_SOCKET",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "ECONNABORTED",
+  "ENOTCONN",
+  "ESHUTDOWN",
+  "ECONNRESET",
+]);
+
+/**
+ * Check if an error is a transient network error that should be retried.
+ * Handles both Node.js error codes and fetch-specific errors.
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (!error) return false;
+  
+  // Check for Error with code property (Node.js style)
+  if (error instanceof Error && "code" in error) {
+    const code = (error as any).code;
+    if (typeof code === "string" && NETWORK_ERROR_CODES.has(code)) {
+      return true;
+    }
+  }
+  
+  // Check for fetch AbortError (not a network error, but user cancellation)
+  if (error instanceof Error && error.name === "AbortError") {
+    return false; // Don't retry aborts
+  }
+  
+  // Check for TypeError with network-related messages (fetch in browsers/Node)
+  if (error instanceof TypeError) {
+    const message = error.message.toLowerCase();
+    if (
+      message.includes("network") ||
+      message.includes("fetch") ||
+      message.includes("connection") ||
+      message.includes("econnreset") ||
+      message.includes("econnrefused") ||
+      message.includes("etimedout") ||
+      message.includes("enotfound") ||
+      message.includes("eaisocket") ||
+      message.includes("socket hang up") ||
+      message.includes("eof") ||
+      message.includes("unexpected end of")
+    ) {
+      return true;
+    }
+  }
+  
+  // Check for generic Error with network-related message
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    if (
+      message.includes("econnreset") ||
+      message.includes("econnrefused") ||
+      message.includes("etimedout") ||
+      message.includes("enotfound") ||
+      message.includes("eaisocket") ||
+      message.includes("socket hang up") ||
+      message.includes("connection reset") ||
+      message.includes("connection refused") ||
+      message.includes("timed out") ||
+      message.includes("network") ||
+      message.includes("fetch failed")
+    ) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
  * Creates an Antigravity OAuth plugin for a specific provider ID.
  */
 export const createAntigravityPlugin = (providerId: string) => async (
@@ -2622,6 +2705,40 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     status: 400,
                     headers: { "Content-Type": "application/json" }
                   });
+                }
+
+                // Handle network errors with exponential backoff (like capacity errors)
+                // This catches ECONNRESET, ETIMEDOUT, ECONNREFUSED, etc.
+                if (isNetworkError(error)) {
+                  checkAborted(); // Respect user cancellation before retrying
+                  
+                  // Exponential backoff for network errors: 1s → 2s → 4s → 8s (max)
+                  const baseDelayMs = 1000;
+                  const maxDelayMs = 8000;
+                  const exponentialDelay = Math.min(baseDelayMs * Math.pow(2, capacityRetryCount), maxDelayMs);
+                  // Add ±10% jitter to prevent thundering herd
+                  const jitter = exponentialDelay * (0.9 + Math.random() * 0.2);
+                  const waitMs = Math.round(jitter);
+                  const waitSec = Math.round(waitMs / 1000);
+                  
+                  pushDebug(`Network error on account ${account.index}, endpoint ${currentEndpoint}: ${error instanceof Error ? error.message : String(error)}. Exponential backoff ${waitMs}ms (attempt ${capacityRetryCount + 1})`);
+
+                  await showToast(
+                    `⏳ Network error. Retrying in ${waitSec}s...`,
+                    "warning",
+                  );
+                  
+                  await sleep(waitMs, abortSignal);
+                  
+                  // Retry the same endpoint up to max retries
+                  if (capacityRetryCount < 3) {
+                    capacityRetryCount++;
+                    i -= 1; // Retry same endpoint (i++ in loop will bring it back)
+                    continue;
+                  } else {
+                    pushDebug(`Max network error retries (3) exhausted for endpoint ${currentEndpoint}, trying next endpoint...`);
+                    // Fall through to try next endpoint
+                  }
                 }
 
                 if (i < endpoints.length - 1) {
