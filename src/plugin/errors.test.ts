@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EmptyResponseError, ToolIdMismatchError } from "./errors";
+import { StalledError } from "./stall-guard";
 import { isNetworkError } from "../plugin.ts";
 
 // ─── EmptyResponseError ───────────────────────────────────────────────────────
@@ -210,5 +211,18 @@ describe("isNetworkError", () => {
     const error = new Error("ESHUTDOWN");
     (error as any).code = "ESHUTDOWN";
     expect(isNetworkError(error)).toBe(true);
+  });
+});
+
+describe("isNetworkError stall classification", () => {
+  it("treats StalledError as retryable", () => {
+    expect(isNetworkError(new StalledError("headers", 180_000))).toBe(true);
+    expect(isNetworkError(new StalledError("body", 300_000))).toBe(true);
+  });
+
+  it("never classifies a user abort as retryable", () => {
+    const abort = new Error("This operation was aborted");
+    abort.name = "AbortError";
+    expect(isNetworkError(abort)).toBe(false);
   });
 });

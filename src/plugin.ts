@@ -37,6 +37,7 @@ import {
   createSyntheticErrorResponse,
 } from "./plugin/request-helpers";
 import { EmptyResponseError } from "./plugin/errors";
+import { fetchWithStallGuard, isStalledError } from "./plugin/stall-guard";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
@@ -1272,7 +1273,11 @@ const NETWORK_ERROR_CODES = new Set([
  */
 export function isNetworkError(error: unknown): boolean {
   if (!error) return false;
-  
+
+  // Stalled requests (no response headers or no stream data for too long)
+  // are retryable just like transient network errors.
+  if (isStalledError(error)) return true;
+
   // Check for Error with code property (Node.js style)
   if (error instanceof Error && "code" in error) {
     const code = (error as any).code;
@@ -2253,7 +2258,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 globalRetryCount++;
 
                 checkAborted(); // Check abort before making the request
-                const response = await sendFetch(prepared.request, prepared.init);
+                const response = await fetchWithStallGuard(sendFetch, prepared.request, prepared.init);
                 pushDebug(`status=${response.status} ${response.statusText}`);
 
 
