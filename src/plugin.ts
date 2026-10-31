@@ -2164,6 +2164,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Track network error retries separately
             let networkRetryCount = 0;
             let lastNetworkErrorEndpoint = -1;
+            // Global retry counter to prevent infinite loops across all accounts/endpoints
+            let globalRetryCount = 0;
+            const MAX_GLOBAL_RETRIES = 10;
             
             const endpoints = getEndpointFallbacks(headerStyle);
             for (let i = 0; i < endpoints.length; i++) {
@@ -2242,6 +2245,14 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   tokenConsumed = getTokenTracker().consume(account.index);
                 }
 
+                // Check global retry limit
+                if (globalRetryCount >= MAX_GLOBAL_RETRIES) {
+                  pushDebug(`Max global retries (${MAX_GLOBAL_RETRIES}) exceeded, aborting`);
+                  throw new Error(`Request failed after ${MAX_GLOBAL_RETRIES} retries across all accounts and endpoints. Last error: ${lastError?.message || "unknown"}`);
+                }
+                globalRetryCount++;
+
+                checkAborted(); // Check abort before making the request
                 const response = await sendFetch(prepared.request, prepared.init);
                 pushDebug(`status=${response.status} ${response.statusText}`);
 
