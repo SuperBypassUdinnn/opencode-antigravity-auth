@@ -1248,6 +1248,59 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
 }
 
 /**
+ * Cumulative budget for in-request waits that emit no events.
+ *
+ * The TUI replaces its server when its event stream stays idle for 45 s, so a
+ * request that keeps sleeping past that window looks like a dead server and
+ * restarts the session. A single attempt therefore either waits inside this
+ * budget or fails with a descriptive error, which finishes the request and
+ * keeps events flowing.
+ */
+const SILENT_WAIT_BUDGET_MS = 25_000;
+
+interface SilentWaitBudget {
+  spentMs: number;
+}
+
+function createSilentWaitBudget(): SilentWaitBudget {
+  return { spentMs: 0 };
+}
+
+/**
+ * Sleeps only while the current request attempt still has silent-wait budget
+ * left. Throws instead of sleeping past the budget so the caller reports a
+ * rate-limit or quota error rather than starving the client's event stream.
+ */
+async function sleepWithinBudget(
+  budget: SilentWaitBudget,
+  ms: number,
+  reason: string,
+  debug: (line: string) => void,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  // A user abort wins over the budget: it must reach the caller untouched.
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Aborted");
+  }
+  const remainingMs = SILENT_WAIT_BUDGET_MS - budget.spentMs;
+  if (ms > remainingMs) {
+    debug(
+      `silent-wait budget exhausted: refusing ${ms}ms wait (${reason}) with ${Math.max(0, remainingMs)}ms left`,
+    );
+    throw new Error(
+      `Cannot wait ${formatWaitTime(ms)} for ${reason}: one request would stay silent past the 45s client watchdog (budget ${formatWaitTime(SILENT_WAIT_BUDGET_MS)}). Try again later.`,
+    );
+  }
+  // Charge only the time actually spent, so an abort mid-wait does not burn budget.
+  const startedAt = Date.now();
+  try {
+    await sleep(ms, signal);
+  } finally {
+    budget.spentMs += Math.min(ms, Date.now() - startedAt);
+  }
+}
+
+/**
  * Network error codes that indicate transient connection failures
  * and should be retried with exponential backoff.
  */
@@ -1741,6 +1794,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
             return accountManager.hasOtherAccountWithAntigravityAvailable(currentAccount.index, family, model, eligible);
           };
 
+          // One budget for the whole request: every silent wait below feeds it,
+          // so a chain of short waits cannot starve the client's event stream.
+          const silentWaitBudget = createSilentWaitBudget();
+
           while (true) {
             // Check for abort at the start of each iteration
             checkAborted();
@@ -1823,7 +1880,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   softQuotaToastShown = true;
                 }
                 
-                await sleep(softQuotaWaitMs, abortSignal);
+                await sleepWithinBudget(silentWaitBudget, softQuotaWaitMs, "all accounts over the soft quota threshold", pushDebug, abortSignal);
                 continue;
               }
 
@@ -1872,7 +1929,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               }
 
               // Wait for the rate-limit cooldown to expire, then retry
-              await sleep(waitMs, abortSignal);
+              await sleepWithinBudget(silentWaitBudget, waitMs, "rate limit or capacity cooldown", pushDebug, abortSignal);
               continue;
             }
 
@@ -2240,7 +2297,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 if (config.request_jitter_max_ms > 0) {
                   const jitterMs = Math.floor(Math.random() * config.request_jitter_max_ms);
                   if (jitterMs > 0) {
-                    await sleep(jitterMs, abortSignal);
+                    await sleepWithinBudget(silentWaitBudget, jitterMs, "request jitter", pushDebug, abortSignal);
                   }
                 }
 
@@ -2316,7 +2373,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                        "warning",
                      );
                      
-                     await sleep(waitMs, abortSignal);
+                     await sleepWithinBudget(silentWaitBudget, waitMs, "rate limit or capacity cooldown", pushDebug, abortSignal);
                      
                      // CRITICAL FIX: Decrement i so that the loop 'continue' retries the SAME endpoint index
                      // (i++ in the loop will bring it back to the current index)
@@ -2378,7 +2435,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   // Progressive retry for standard 429s: 1st 429 → 1s then switch (if enabled) or retry same
                   if (attempt === 1 && rateLimitReason !== "QUOTA_EXHAUSTED") {
                     await showToast(`Rate limited. Quick retry in 1s...`, "warning");
-                    await sleep(FIRST_RETRY_DELAY_MS, abortSignal);
+                    await sleepWithinBudget(silentWaitBudget, FIRST_RETRY_DELAY_MS, "quick 429 retry", pushDebug, abortSignal);
                     
                     // CacheFirst mode: wait for same account if within threshold (preserves prompt cache)
                     if (config.scheduling_mode === 'cache_first') {
@@ -2388,7 +2445,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                         pushDebug(`cache_first: waiting ${effectiveDelayMs}ms for same account to recover`);
                         await showToast(`⏳ Waiting ${Math.ceil(effectiveDelayMs / 1000)}s for same account (prompt cache preserved)...`, "info");
                         accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs);
-                        await sleep(effectiveDelayMs, abortSignal);
+                        await sleepWithinBudget(silentWaitBudget, effectiveDelayMs, "waiting for the same account to recover", pushDebug, abortSignal);
                         // Retry same endpoint after wait
                         i -= 1;
                         continue;
@@ -2419,7 +2476,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       if (hasOtherAccountWithAntigravity(account)) {
                         pushDebug(`antigravity exhausted on account ${account.index}, but available on others. Switching account.`);
                         await showToast(`Rate limited again. Switching account in 5s...`, "warning");
-                        await sleep(SWITCH_ACCOUNT_DELAY_MS, abortSignal);
+                        await sleepWithinBudget(silentWaitBudget, SWITCH_ACCOUNT_DELAY_MS, "switching to another account", pushDebug, abortSignal);
                         shouldSwitchAccount = true;
                         break;
                       }
@@ -2473,13 +2530,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       ? ` (quota resets ${bodyInfo.quotaResetTime})`
                       : ``;
                     await showToast(`Rate limited again. Switching account in 5s...${quotaMsg}`, "warning");
-                    await sleep(SWITCH_ACCOUNT_DELAY_MS, abortSignal);
+                    await sleepWithinBudget(silentWaitBudget, SWITCH_ACCOUNT_DELAY_MS, "switching to another account", pushDebug, abortSignal);
                   } else {
                     // Single account: exponential backoff (1s, 2s, 4s, 8s... max 60s)
                     const expBackoffMs = Math.min(FIRST_RETRY_DELAY_MS * Math.pow(2, attempt - 1), 60000);
                     const expBackoffFormatted = expBackoffMs >= 1000 ? `${Math.round(expBackoffMs / 1000)}s` : `${expBackoffMs}ms`;
                     await showToast(`Rate limited. Retrying in ${expBackoffFormatted} (attempt ${attempt})...`, "warning");
-                    await sleep(expBackoffMs, abortSignal);
+                    await sleepWithinBudget(silentWaitBudget, expBackoffMs, "single-account rate limit backoff", pushDebug, abortSignal);
                   }
 
                   lastFailure = createFailureContext(response);
@@ -2656,7 +2713,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                         `Empty response received. Retrying (${currentAttempts}/${maxAttempts})...`,
                         "warning"
                       );
-                      await sleep(retryDelayMs, abortSignal);
+                      await sleepWithinBudget(silentWaitBudget, retryDelayMs, "empty response retry", pushDebug, abortSignal);
                       continue; // Retry the endpoint loop
                     }
                     
@@ -2772,7 +2829,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     "warning",
                   );
                   
-                  await sleep(waitMs, abortSignal);
+                  await sleepWithinBudget(silentWaitBudget, waitMs, "rate limit or capacity cooldown", pushDebug, abortSignal);
                   
                   // Retry the same endpoint up to max retries
                   if (networkRetryCount < 3) {
@@ -3808,4 +3865,7 @@ export const __testExports = {
   resolveQuotaFallbackHeaderStyle,
   parseBodyInfoFromText,
   buildQuotaExhaustedMessage,
+  SILENT_WAIT_BUDGET_MS,
+  createSilentWaitBudget,
+  sleepWithinBudget,
 };
