@@ -1831,13 +1831,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
           const hasOtherAccountWithAntigravity = (currentAccount: any): boolean => {
             if (family !== "gemini") return false;
             // Use AccountManager method which properly checks for disabled/cooling-down accounts
-            return accountManager.hasOtherAccountWithAntigravityAvailable(currentAccount.index, family, model, eligible);
+            return accountManager.hasOtherAccountWithAntigravityAvailable(
+              currentAccount.index,
+              family,
+              model,
+              eligible,
+              config.soft_quota_threshold_percent,
+              softQuotaCacheTtlMs,
+            );
           };
 
           // One budget for the whole request: every silent wait below feeds it,
           // so a chain of short waits cannot starve the client's event stream.
           const silentWaitBudget = createSilentWaitBudget();
           const selectionGuard = createSelectionGuard();
+          const softQuotaCacheTtlMs = computeSoftQuotaCacheTtlMs(
+            config.soft_quota_cache_ttl_minutes,
+            config.quota_refresh_interval_minutes,
+          );
           // Set when a round reaches a real request attempt; a round that only
           // switches accounts feeds the selection guard instead.
           let roundMadeAttempt = true;
@@ -1861,11 +1872,6 @@ export const createAntigravityPlugin = (providerId: string) => async (
               throw new Error("No Antigravity accounts available. Run `opencode auth login`.");
             }
             roundMadeAttempt = false;
-
-            const softQuotaCacheTtlMs = computeSoftQuotaCacheTtlMs(
-              config.soft_quota_cache_ttl_minutes,
-              config.quota_refresh_interval_minutes,
-            );
 
             let account = accountManager.getCurrentOrNextForFamily(
               family, 
@@ -2209,7 +2215,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               // Antigravity-first fallback: exhaust antigravity across ALL accounts before gemini-cli
               if (allowQuotaFallback && family === "gemini" && headerStyle === "antigravity") {
                 // Check if ANY other account has antigravity available
-                if (accountManager.hasOtherAccountWithAntigravityAvailable(account.index, family, model, eligible)) {
+                if (accountManager.hasOtherAccountWithAntigravityAvailable(account.index, family, model, eligible, config.soft_quota_threshold_percent, softQuotaCacheTtlMs)) {
                   // Switch to another account with antigravity (preserve antigravity priority)
                   pushDebug(`antigravity rate-limited on account ${account.index}, but available on other accounts. Switching.`);
                   shouldSwitchAccount = true;
@@ -2952,11 +2958,23 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     preferredHeaderStyle,
                     !allowQuotaFallback,
                     eligible,
-                  ) || 60_000;
+                  );
+                  selectionGuard.recordAttempt();
+                  if (waitMs <= 0) {
+                    // Zero means the pool still reports quota somewhere, so a
+                    // rate-limit error would name a reset that does not exist.
+                    // Every candidate is simply unusable for this request.
+                    pushDebug(
+                      `no-attemptable-account family=${family} accounts=${accountCount} waitMs=0 threshold=${config.soft_quota_threshold_percent}`,
+                    );
+                    throw new Error(
+                      `No account can serve ${model ?? family}: the pool still reports quota, but every candidate is over the ${config.soft_quota_threshold_percent}% soft quota threshold, rate-limited for the alternate quota pool, or cooling down. ` +
+                      `Lower soft_quota_threshold_percent, add another account with \`opencode auth login\`, or wait for the quota to refresh.`,
+                    );
+                  }
                   pushDebug(
                     `no-attemptable-account family=${family} accounts=${accountCount} waitMs=${waitMs}`,
                   );
-                  selectionGuard.recordAttempt();
                   await sleepWithinBudget(
                     silentWaitBudget,
                     waitMs,

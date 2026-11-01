@@ -831,10 +831,17 @@ export class AccountManager {
    * Used to determine whether to switch accounts vs fall back to gemini-cli:
    * - If true: Switch to another account (preserve antigravity priority)
    * - If false: All accounts exhausted antigravity, safe to fall back to gemini-cli
-   * 
+   *
+   * Accounts held back by the soft quota guard count as unavailable here, because
+   * selection skips them: reporting them as available makes every round switch
+   * accounts without ever falling back or sending a request.
+   *
    * @param currentAccountIndex - Index of the current account (will be excluded from check)
    * @param family - Model family ("gemini" or "claude")
    * @param model - Optional model name for model-specific rate limits
+   * @param eligible - Additional account filter applied by the caller
+   * @param softQuotaThresholdPercent - Soft quota threshold used by account selection
+   * @param softQuotaCacheTtlMs - Maximum age of a cached quota reading
    * @returns true if any other enabled, non-cooling-down account has antigravity available
    */
   hasOtherAccountWithAntigravityAvailable(
@@ -842,6 +849,8 @@ export class AccountManager {
     family: ModelFamily,
     model?: string | null,
     eligible: (account: ManagedAccount) => boolean = () => true,
+    softQuotaThresholdPercent: number = 100,
+    softQuotaCacheTtlMs: number = 0,
   ): boolean {
     // Claude has no gemini-cli fallback - always return false
     // (This method is only relevant for Gemini's dual quota pools)
@@ -860,6 +869,11 @@ export class AccountManager {
       }
       // Skip cooling down accounts
       if (this.isAccountCoolingDown(acc)) {
+        return false;
+      }
+      // Accounts above the soft quota threshold are skipped by selection, so
+      // they cannot justify switching instead of falling back to gemini-cli.
+      if (isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) {
         return false;
       }
       // Clear expired rate limits before checking
