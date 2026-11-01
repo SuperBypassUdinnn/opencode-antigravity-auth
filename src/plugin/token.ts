@@ -7,6 +7,13 @@ import type { OAuthAuthDetails, PluginClient, RefreshParts } from "./types";
 
 const log = createLogger("token");
 
+/**
+ * Upper bound for one OAuth refresh round trip. The TUI replaces the server
+ * whenever its event stream stays idle for 45 s, so an unbounded refresh must
+ * never be able to outlive that window.
+ */
+const TOKEN_REFRESH_TIMEOUT_MS = 10000;
+
 interface OAuthErrorPayload {
   error?:
     | string
@@ -133,10 +140,15 @@ async function requestAccessToken(auth: OAuthAuthDetails): Promise<OAuthAuthDeta
     return undefined;
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TOKEN_REFRESH_TIMEOUT_MS);
+  timeout.unref?.();
+
   try {
     const startTime = Date.now();
     const response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
       },
@@ -204,8 +216,14 @@ async function requestAccessToken(auth: OAuthAuthDetails): Promise<OAuthAuthDeta
     if (error instanceof AntigravityTokenRefreshError) {
       throw error;
     }
+    if (error instanceof Error && error.name === "AbortError") {
+      log.warn("Token refresh timed out", { timeoutMs: TOKEN_REFRESH_TIMEOUT_MS });
+      return undefined;
+    }
     log.error("Unexpected token refresh error", { error: String(error) });
     return undefined;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

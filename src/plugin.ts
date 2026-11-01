@@ -2258,7 +2258,21 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 globalRetryCount++;
 
                 checkAborted(); // Check abort before making the request
-                const response = await fetchWithStallGuard(sendFetch, prepared.request, prepared.init);
+                // A silent wait is what makes the client replace the server, so
+                // record how long the upstream keeps the request without a
+                // response. The heartbeat only writes to the debug log.
+                const requestStartedAt = Date.now();
+                const heartbeat = setInterval(() => {
+                  pushDebug(`awaiting upstream response for ${Math.round((Date.now() - requestStartedAt) / 1000)}s (endpoint ${i + 1}/${endpoints.length})`);
+                }, 10_000);
+                heartbeat.unref?.();
+                let response: Response;
+                try {
+                  response = await fetchWithStallGuard(sendFetch, prepared.request, prepared.init);
+                } finally {
+                  clearInterval(heartbeat);
+                  pushDebug(`upstream responded in ${Date.now() - requestStartedAt}ms`);
+                }
                 pushDebug(`status=${response.status} ${response.statusText}`);
 
 

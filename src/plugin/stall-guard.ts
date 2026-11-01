@@ -8,10 +8,15 @@
  * "server restarted while you were working" restart loop. This module wraps
  * the loader fetch with two deadlines:
  *
+ * The deadlines stay below the 45s event-stream idle watchdog the TUI client
+ * runs against its server, so a stall surfaces as a plugin-level abort and
+ * retry (which keeps events flowing) instead of the client declaring the
+ * stream dead and replacing the server process.
+ *
  * - headers: the fetch call itself must settle within `headersTimeoutMs`
- *   (default 180s, env OPENCODE_ANTIGRAVITY_STALL_HEADERS_MS).
+ *   (default 30s, env OPENCODE_ANTIGRAVITY_STALL_HEADERS_MS).
  * - body: while streaming the response, an idle timer resets on every chunk;
- *   if no chunk arrives for `bodyIdleMs` (default 300s, env
+ *   if no chunk arrives for `bodyIdleMs` (default 25s, env
  *   OPENCODE_ANTIGRAVITY_STALL_IDLE_MS) the stream is aborted.
  *
  * Both deadlines raise a StalledError, which the retry loop treats like a
@@ -20,8 +25,8 @@
  * never classified as stalls.
  */
 
-const DEFAULT_HEADERS_TIMEOUT_MS = 180_000;
-const DEFAULT_BODY_IDLE_TIMEOUT_MS = 300_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+const DEFAULT_BODY_IDLE_TIMEOUT_MS = 25_000;
 
 export type StalledPhase = "headers" | "body";
 

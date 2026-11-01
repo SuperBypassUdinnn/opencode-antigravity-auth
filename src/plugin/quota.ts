@@ -15,6 +15,14 @@ import type { AccountMetadataV3 } from "./storage";
 
 const FETCH_TIMEOUT_MS = 10000;
 
+/**
+ * Total wall-clock budget for one quota sweep across every account. The TUI
+ * aborts and replaces the server whenever its event stream stays idle for 45 s,
+ * so a sweep must always finish - or give up on the remaining accounts - well
+ * inside that window.
+ */
+const SWEEP_BUDGET_MS = 20000;
+
 export type QuotaGroup = "claude" | "gemini-pro" | "gemini-flash";
 
 export interface QuotaGroupSummary {
@@ -341,10 +349,23 @@ export async function checkAccountsQuota(
   
   logQuotaFetch("start", accounts.length);
 
+  const sweepDeadline = Date.now() + SWEEP_BUDGET_MS;
+
   for (const [index, account] of accounts.entries()) {
     const disabled = account.enabled === false;
     if (disabled && options.includeDisabled !== true) {
       results.push({ index, email: account.email, status: "disabled", disabled: true });
+      continue;
+    }
+
+    if (Date.now() > sweepDeadline) {
+      results.push({
+        index,
+        email: account.email,
+        status: "error",
+        disabled,
+        error: `Quota sweep budget of ${SWEEP_BUDGET_MS} ms exceeded; account not checked`,
+      });
       continue;
     }
 

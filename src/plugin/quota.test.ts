@@ -111,4 +111,27 @@ describe("checkAccountsQuota", () => {
     ])
     expect(result?.geminiCliQuota?.models[1]).toMatchObject({ remainingFraction: 0.42, resetTime: "2026-10-22T00:00:00Z" })
   })
+
+  it("stops the sweep once its budget is spent", async () => {
+    let clock = 1_000_000
+    const nowMock = vi.spyOn(Date, "now").mockImplementation(() => clock)
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        clock += 25_000
+        return jsonResponse({ models: {} })
+      }))
+      const accounts: AccountMetadataV3[] = [
+        { ...account, email: "first@example.com" },
+        { ...account, email: "second@example.com" },
+      ]
+
+      const results = await checkAccountsQuota(accounts, {} as PluginClient)
+
+      expect(results[0]?.status).toBe("ok")
+      expect(results[1]).toMatchObject({ index: 1, status: "error" })
+      expect(results[1]?.error).toMatch(/budget/i)
+    } finally {
+      nowMock.mockRestore()
+    }
+  })
 })

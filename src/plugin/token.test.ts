@@ -112,4 +112,28 @@ describe("refreshAccessToken", () => {
     expect(latest?.refresh).toBe("shared-rotation|project-123");
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("abandons a refresh that outlives the watchdog bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createClient();
+      const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error("refresh fetch ran without an abort signal"));
+          return;
+        }
+        signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+      }));
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const pending = refreshAccessToken(baseAuth, client, ANTIGRAVITY_PROVIDER_ID);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(pending).resolves.toBeUndefined();
+      expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

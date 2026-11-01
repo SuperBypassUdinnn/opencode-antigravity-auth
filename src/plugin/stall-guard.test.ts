@@ -131,15 +131,15 @@ describe("env knobs", () => {
   it("falls back to defaults on invalid values", () => {
     vi.stubEnv("OPENCODE_ANTIGRAVITY_STALL_HEADERS_MS", "abc");
     vi.stubEnv("OPENCODE_ANTIGRAVITY_STALL_IDLE_MS", "-5");
-    expect(stallHeadersTimeoutMs()).toBe(180_000);
-    expect(stallBodyIdleMs()).toBe(300_000);
+    expect(stallHeadersTimeoutMs()).toBe(30_000);
+    expect(stallBodyIdleMs()).toBe(25_000);
   });
 
   it("falls back to defaults on zero and non-finite values", () => {
     vi.stubEnv("OPENCODE_ANTIGRAVITY_STALL_HEADERS_MS", "0");
     vi.stubEnv("OPENCODE_ANTIGRAVITY_STALL_IDLE_MS", "Infinity");
-    expect(stallHeadersTimeoutMs()).toBe(180_000);
-    expect(stallBodyIdleMs()).toBe(300_000);
+    expect(stallHeadersTimeoutMs()).toBe(30_000);
+    expect(stallBodyIdleMs()).toBe(25_000);
   });
 
   it("uses valid overrides", () => {
