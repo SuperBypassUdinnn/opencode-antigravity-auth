@@ -1291,13 +1291,53 @@ async function sleepWithinBudget(
       `Cannot wait ${formatWaitTime(ms)} for ${reason}: one request would stay silent past the 45s client watchdog (budget ${formatWaitTime(SILENT_WAIT_BUDGET_MS)}). Try again later.`,
     );
   }
-  // Charge only the time actually spent, so an abort mid-wait does not burn budget.
+  // Charge the requested wait on success; an aborted wait only costs the time
+  // it actually spent, so an abort mid-wait does not burn the budget.
   const startedAt = Date.now();
   try {
     await sleep(ms, signal);
-  } finally {
+  } catch (error) {
     budget.spentMs += Math.min(ms, Date.now() - startedAt);
+    throw error;
   }
+  budget.spentMs += ms;
+}
+
+interface SelectionGuard {
+  /**
+   * Registers an account that was skipped without any request attempt.
+   * Returns true when that account comes around again, which means a full
+   * cycle of selections produced no attempt at all.
+   */
+  recordSkip(accountKey: string): boolean;
+  /** Registers a selection round that reached a real request attempt. */
+  recordAttempt(): void;
+}
+
+/**
+ * Stops the account-selection loop from spinning.
+ *
+ * When every account is already rate-limited for the requested header style,
+ * each round only re-selects an account and continues without awaiting
+ * anything. That loop runs thousands of times per second, emits thousands of
+ * log lines, and starves the client's event stream until the TUI replaces the
+ * server. Seeing the same account twice without an attempt in between is the
+ * signal that no account can serve the request right now.
+ */
+function createSelectionGuard(): SelectionGuard {
+  const skipped = new Set<string>();
+  return {
+    recordSkip(accountKey: string): boolean {
+      if (skipped.has(accountKey)) {
+        return true;
+      }
+      skipped.add(accountKey);
+      return false;
+    },
+    recordAttempt(): void {
+      skipped.clear();
+    },
+  };
 }
 
 /**
@@ -1797,6 +1837,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // One budget for the whole request: every silent wait below feeds it,
           // so a chain of short waits cannot starve the client's event stream.
           const silentWaitBudget = createSilentWaitBudget();
+          const selectionGuard = createSelectionGuard();
+          // Set when a round reaches a real request attempt; a round that only
+          // switches accounts feeds the selection guard instead.
+          let roundMadeAttempt = true;
 
           while (true) {
             // Check for abort at the start of each iteration
@@ -1816,6 +1860,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
             if (accountCount === 0) {
               throw new Error("No Antigravity accounts available. Run `opencode auth login`.");
             }
+            roundMadeAttempt = false;
 
             const softQuotaCacheTtlMs = computeSoftQuotaCacheTtlMs(
               config.soft_quota_cache_ttl_minutes,
@@ -2213,6 +2258,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
             }
             
             while (!shouldSwitchAccount) {
+              // This round reaches a real request, so the sweep counter resets.
+              roundMadeAttempt = true;
+              selectionGuard.recordAttempt();
             
             // Flag to force thinking recovery on retry after API error
             let forceThinkingRecovery = false;
@@ -2884,6 +2932,39 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 }
 
                 throw lastError || new Error("All Antigravity endpoints failed");
+              }
+
+              // Rounds that skip an account without attempting a request must
+              // not loop forever: seeing the same account twice with no attempt
+              // in between means every account is blocked for this header
+              // style. Wait inside the silent budget or fail, so the request
+              // finishes instead of starving the client's event stream.
+              if (!roundMadeAttempt) {
+                // Prefer a stable identity: pool indexes shift when an account is
+                // disabled mid-request, and an empty key would collide for every
+                // account that has neither an email nor an id.
+                const accountKey =
+                  account.email || account.id || account.parts?.refreshToken || `index-${account.index}`;
+                if (selectionGuard.recordSkip(accountKey)) {
+                  const waitMs = accountManager.getMinWaitTimeForFamily(
+                    family,
+                    model,
+                    preferredHeaderStyle,
+                    !allowQuotaFallback,
+                    eligible,
+                  ) || 60_000;
+                  pushDebug(
+                    `no-attemptable-account family=${family} accounts=${accountCount} waitMs=${waitMs}`,
+                  );
+                  selectionGuard.recordAttempt();
+                  await sleepWithinBudget(
+                    silentWaitBudget,
+                    waitMs,
+                    `all ${accountCount} account(s) rate-limited for ${model ?? family} (quota resets in ${formatWaitTime(waitMs)})`,
+                    pushDebug,
+                    abortSignal,
+                  );
+                }
               }
 
               continue;
@@ -3868,4 +3949,5 @@ export const __testExports = {
   SILENT_WAIT_BUDGET_MS,
   createSilentWaitBudget,
   sleepWithinBudget,
+  createSelectionGuard,
 };

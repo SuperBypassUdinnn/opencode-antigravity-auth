@@ -102,9 +102,22 @@ function cleanupOldLogs(logsDir: string, maxFiles: number): void {
 }
 
 /**
- * Creates a log writer function that writes to a file.
+ * Upper bound on a single debug log file. A request loop that logs thousands
+ * of lines per second reached 223 MB in about 50 s, and writing that volume
+ * blocks the event loop long enough for the client to replace the server.
  */
-function createLogWriter(filePath?: string): (line: string) => void {
+const MAX_DEBUG_LOG_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Creates a log writer function that writes to a file.
+ *
+ * Writes stop once `maxBytes` is reached, leaving one truncation notice behind,
+ * so a runaway loop cannot fill the disk or block the event loop.
+ */
+export function createLogWriter(
+  filePath?: string,
+  maxBytes: number = MAX_DEBUG_LOG_BYTES,
+): (line: string) => void {
   if (!filePath) {
     return () => {};
   }
@@ -112,10 +125,25 @@ function createLogWriter(filePath?: string): (line: string) => void {
   try {
     const stream = createWriteStream(filePath, { flags: "a" });
     stream.on("error", () => {});
+    let writtenBytes = 0;
+    let truncated = false;
+
     return (line: string) => {
       const timestamp = new Date().toISOString();
       const formatted = `[${timestamp}] ${line}`;
-      stream.write(`${formatted}\n`);
+      const payload = `${formatted}\n`;
+      if (truncated) {
+        return;
+      }
+      if (writtenBytes + payload.length > maxBytes) {
+        truncated = true;
+        stream.write(
+          `[${timestamp}] debug log truncated at ${maxBytes} bytes; further lines are dropped\n`,
+        );
+        return;
+      }
+      writtenBytes += payload.length;
+      stream.write(payload);
     };
   } catch {
     return () => {};
