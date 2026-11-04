@@ -30,7 +30,10 @@ function definition(model: OpencodeModelDefinition) {
     variants: Object.entries(model.variants ?? {}).map(([id, settings]) => ({
       id,
       settings: settings.thinkingLevel
-        ? { thinkingConfig: { thinkingLevel: settings.thinkingLevel } }
+        ? // includeThoughts must ride along with the level: opencode forwards the
+          // settings verbatim as providerOptions.google.thinkingConfig, and a
+          // thinkingLevel-only config would otherwise suppress thought summaries.
+          { thinkingConfig: { includeThoughts: true, thinkingLevel: settings.thinkingLevel } }
         : { ...settings },
     })),
   }

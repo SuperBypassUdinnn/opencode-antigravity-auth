@@ -256,6 +256,26 @@ describe("extractThinkingConfig", () => {
     );
     expect(result).toEqual({ includeThoughts: true, thinkingBudget: DEFAULT_THINKING_BUDGET });
   });
+
+  it("defaults includeThoughts to true for thinkingLevel-only configs", () => {
+    // Gemini 3 variant overlays reach the body as thinkingLevel without
+    // includeThoughts; the level implies thinking is enabled.
+    const result = extractThinkingConfig(
+      {},
+      { thinkingConfig: { thinkingLevel: "high" } },
+      undefined,
+    );
+    expect(result).toEqual({ includeThoughts: true, thinkingBudget: DEFAULT_THINKING_BUDGET });
+  });
+
+  it("respects explicit includeThoughts false alongside thinkingLevel", () => {
+    const result = extractThinkingConfig(
+      {},
+      { thinkingConfig: { thinkingLevel: "high", includeThoughts: false } },
+      undefined,
+    );
+    expect(result).toEqual({ includeThoughts: false, thinkingBudget: DEFAULT_THINKING_BUDGET });
+  });
 });
 
 describe("resolveThinkingConfig", () => {
@@ -906,6 +926,21 @@ describe("normalizeThinkingConfig", () => {
       includeThoughts: true,
     });
     // When budget is non-finite (undefined), includeThoughts is forced to false
+    expect(result).toEqual({ includeThoughts: false });
+  });
+
+  it("enables includeThoughts for thinkingLevel-only configs", () => {
+    const result = normalizeThinkingConfig({ thinkingLevel: "high" });
+    expect(result).toEqual({ includeThoughts: true });
+  });
+
+  it("enables includeThoughts for snake_case thinking_level configs", () => {
+    const result = normalizeThinkingConfig({ thinking_level: "medium" });
+    expect(result).toEqual({ includeThoughts: true });
+  });
+
+  it("keeps explicit includeThoughts false when thinkingLevel is set", () => {
+    const result = normalizeThinkingConfig({ thinkingLevel: "high", includeThoughts: false });
     expect(result).toEqual({ includeThoughts: false });
   });
 });

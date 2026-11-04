@@ -8,7 +8,7 @@ describe("OpenCode V2 models", () => {
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3-flash"]).toMatchObject({
       package: "aisdk:@ai-sdk/google",
       capabilities: { tools: true, input: ["text", "image", "pdf"], output: ["text"] },
-      variants: expect.arrayContaining([{ id: "high", settings: { thinkingConfig: { thinkingLevel: "high" } } }]),
+      variants: expect.arrayContaining([{ id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } }]),
     })
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-claude-opus-4-6-thinking"]?.variants).toContainEqual({
       id: "max", settings: { thinkingConfig: { thinkingBudget: 32768 } },
@@ -34,9 +34,9 @@ describe("OpenCode V2 models", () => {
     expect(resolveModelForHeaderStyle("antigravity-gemini-3.9-flash-medium", "antigravity").actualModel).toBe("gemini-3.9-flash-medium")
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash"]?.variants).toEqual([
-      { id: "low", settings: { thinkingConfig: { thinkingLevel: "low" } } },
-      { id: "medium", settings: { thinkingConfig: { thinkingLevel: "medium" } } },
-      { id: "high", settings: { thinkingConfig: { thinkingLevel: "high" } } },
+      { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
+      { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
+      { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
     ])
   })
 
@@ -52,9 +52,9 @@ describe("OpenCode V2 models", () => {
       name: "Gemini 3.8 Flash (Antigravity)",
       limit: { context: 1048576, output: 65536 },
       variants: [
-        { id: "low", settings: { thinkingConfig: { thinkingLevel: "low" } } },
-        { id: "medium", settings: { thinkingConfig: { thinkingLevel: "medium" } } },
-        { id: "high", settings: { thinkingConfig: { thinkingLevel: "high" } } },
+        { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
+        { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
+        { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
       ],
     })
     expect(catalog["antigravity-gemini-3.8-flash-high"]).toBeUndefined()

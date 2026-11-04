@@ -721,6 +721,8 @@ export interface AntigravityUsageMetadata {
  */
 export interface ThinkingConfig {
   thinkingBudget?: number;
+  /** String thinking level (for Gemini 3: 'low', 'medium', 'high'); implies thinking is enabled */
+  thinkingLevel?: string;
   includeThoughts?: boolean;
 }
 
@@ -756,8 +758,14 @@ export function extractThinkingConfig(
 
   if (thinkingConfig && typeof thinkingConfig === "object") {
     const config = thinkingConfig as Record<string, unknown>;
+    // A thinkingLevel-only config (Gemini 3 native, e.g. forwarded from opencode model
+    // variants) implies thinking is enabled; default includeThoughts to true so thought
+    // summaries are not silently suppressed. An explicit boolean still wins.
+    const includeThoughts = typeof config.includeThoughts === "boolean"
+      ? config.includeThoughts
+      : typeof config.thinkingLevel === "string";
     return {
-      includeThoughts: Boolean(config.includeThoughts),
+      includeThoughts,
       thinkingBudget: typeof config.thinkingBudget === "number" ? config.thinkingBudget : DEFAULT_THINKING_BUDGET,
     };
   }
@@ -1546,7 +1554,10 @@ export function transformThinkingParts(response: unknown): unknown {
 }
 
 /**
- * Ensures thinkingConfig is valid: includeThoughts only allowed when budget > 0.
+ * Ensures thinkingConfig is valid: includeThoughts only allowed when thinking is
+ * enabled, i.e. a positive budget or a Gemini 3 thinkingLevel. A thinkingLevel
+ * implies thinking is on, so it defaults includeThoughts to true; an explicit
+ * boolean always wins.
  */
 export function normalizeThinkingConfig(config: unknown): ThinkingConfig | undefined {
   if (!config || typeof config !== "object") {
@@ -1556,12 +1567,14 @@ export function normalizeThinkingConfig(config: unknown): ThinkingConfig | undef
   const record = config as Record<string, unknown>;
   const budgetRaw = record.thinkingBudget ?? record.thinking_budget;
   const includeRaw = record.includeThoughts ?? record.include_thoughts;
+  const levelRaw = record.thinkingLevel ?? record.thinking_level;
 
   const thinkingBudget = typeof budgetRaw === "number" && Number.isFinite(budgetRaw) ? budgetRaw : undefined;
   const includeThoughts = typeof includeRaw === "boolean" ? includeRaw : undefined;
+  const thinkingLevel = typeof levelRaw === "string" ? levelRaw : undefined;
 
-  const enableThinking = thinkingBudget !== undefined && thinkingBudget > 0;
-  const finalInclude = enableThinking ? includeThoughts ?? false : false;
+  const enableThinking = (thinkingBudget !== undefined && thinkingBudget > 0) || thinkingLevel !== undefined;
+  const finalInclude = enableThinking ? includeThoughts ?? thinkingLevel !== undefined : false;
 
   if (!enableThinking && finalInclude === false && thinkingBudget === undefined && includeThoughts === undefined) {
     return undefined;
