@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   prepareAntigravityRequest,
   transformAntigravityResponse,
@@ -7,7 +7,13 @@ import {
   __testExports,
 } from "./request";
 import { DEFAULT_CONFIG } from "./config";
-import { initializeDebug } from "./debug";
+import { debugLogToFile, initializeDebug } from "./debug";
+import * as debugModule from "./debug";
+
+vi.mock("./debug", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./debug")>()),
+  debugLogToFile: vi.fn(),
+}));
 import { SKIP_THOUGHT_SIGNATURE, getAntigravityUserAgent } from "../constants";
 import * as config from "./config";
 import type { SignatureStore, ThoughtBuffer, StreamingCallbacks, StreamingOptions } from "./core/streaming/types";
@@ -1409,6 +1415,68 @@ it("removes x-api-key header", () => {
           "session-1",
         ),
       ).rejects.toMatchObject({ message: "THINKING_RECOVERY_NEEDED" });
+    });
+  });
+
+  describe("SSE anomaly surfacing", () => {
+    beforeEach(() => {
+      vi.mocked(debugModule.debugLogToFile).mockClear();
+    });
+
+    it("rewrites a Google error event into a visible response text", () => {
+      const store = createMockSignatureStore();
+      const buffer = createMockThoughtBuffer();
+      const sentBuffer = createMockThoughtBuffer();
+      const errorEvent = { error: { code: 429, message: "quota exceeded", status: "RESOURCE_EXHAUSTED" } };
+      const result = transformSseLine(
+        `data: ${JSON.stringify(errorEvent)}`,
+        store, buffer, sentBuffer, defaultCallbacks, defaultOptions, { ...defaultDebugState },
+      );
+
+      const payload = JSON.parse(result.slice("data: ".length)) as {
+        response: { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+      };
+      const text = payload.response.candidates[0]!.content.parts[0]!.text;
+      expect(text).toContain("RESOURCE_EXHAUSTED");
+      expect(text).toContain("quota exceeded");
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("upstream error event"));
+    });
+
+    it("logs unparseable data lines while passing them through", () => {
+      const store = createMockSignatureStore();
+      const buffer = createMockThoughtBuffer();
+      const sentBuffer = createMockThoughtBuffer();
+      const result = transformSseLine("data: {invalid", store, buffer, sentBuffer, defaultCallbacks, defaultOptions, { ...defaultDebugState });
+
+      expect(result).toBe("data: {invalid");
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("unparseable SSE line"));
+    });
+
+    it("logs a truncated stream when flush runs without usageMetadata", async () => {
+      const store = createMockSignatureStore();
+      const transformer = createStreamingTransformer(store, defaultCallbacks);
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      const outputChunks: Uint8Array[] = [];
+
+      const writer = transformer.writable.getWriter();
+      const reader = transformer.readable.getReader();
+      const readPromise = (async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) outputChunks.push(value);
+        }
+      })();
+
+      const partial = `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "partial" }] } }] })}\n`;
+      await writer.write(encoder.encode(partial));
+      await writer.close();
+      await readPromise;
+
+      const output = outputChunks.map((chunk) => decoder.decode(chunk)).join("");
+      expect(output).toContain("partial");
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("without usageMetadata"));
     });
   });
 });

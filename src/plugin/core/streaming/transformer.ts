@@ -5,6 +5,41 @@ import type {
   ThoughtBuffer,
 } from './types';
 import { processImageData } from '../../image-saver';
+import { debugLogToFile } from '../../debug';
+
+/** Cap debug snippets so a huge malformed payload cannot bloat the log file. */
+const SSE_DEBUG_SNIPPET_MAX = 2000;
+
+/** Log an SSE anomaly to the debug file: parse failures, upstream error
+ * events, and truncated streams are invisible to the SDK wrapper otherwise. */
+function logSseAnomaly(kind: string, json: string): void {
+  debugLogToFile(`[SseTransform] ${kind} (${json.length} chars): ${json.slice(0, SSE_DEBUG_SNIPPET_MAX)}`);
+}
+
+/** Rewrite a Google error event as a schema-valid response whose text carries
+ * the real cause; @ai-sdk/google's chunk schema strips unknown keys, so the
+ * raw event would otherwise end the stream with an empty result. */
+function synthesizeErrorResponse(errorPayload: unknown): unknown {
+  const err = errorPayload as { code?: unknown; message?: unknown; status?: unknown };
+  const status = typeof err?.status === 'string'
+    ? err.status
+    : err?.code !== undefined
+      ? String(err.code)
+      : 'UNKNOWN';
+  const message = typeof err?.message === 'string'
+    ? err.message
+    : JSON.stringify(errorPayload).slice(0, SSE_DEBUG_SNIPPET_MAX);
+  return {
+    candidates: [
+      {
+        content: {
+          role: 'model',
+          parts: [{ text: `[Antigravity] Upstream Google error ${status}: ${message}` }],
+        },
+      },
+    ],
+  };
+}
 
 /**
  * Simple string hash for thinking deduplication.
@@ -49,7 +84,9 @@ export function transformStreamingPayload(
             : parsed.response;
           return `data: ${JSON.stringify(transformed)}`;
         }
-      } catch (_) {}
+      } catch (_) {
+        logSseAnomaly('unparseable SSE payload line', json);
+      }
       return line;
     })
     .join('\n');
@@ -219,7 +256,18 @@ export function transformSseLine(
         : response;
       return `data: ${JSON.stringify(transformed)}`;
     }
-  } catch (_) {}
+
+    // A Google mid-stream error event parses but carries no response key. The
+    // SDK schema strips unknown keys, so the error message would be dropped
+    // silently; rewrite it as a response whose text surfaces the cause.
+    const errorPayload = (parsed as { error?: unknown }).error;
+    if (errorPayload !== undefined) {
+      logSseAnomaly('upstream error event', json);
+      return `data: ${JSON.stringify({ response: synthesizeErrorResponse(errorPayload) })}`;
+    }
+  } catch (_) {
+    logSseAnomaly('unparseable SSE line', json);
+  }
   return line;
 }
 
@@ -347,6 +395,9 @@ export function createStreamingTransformer(
 
       // Inject synthetic usage metadata if missing (fixes "Context % used: 0%" issue)
       if (!hasSeenUsageMetadata) {
+        // A complete Google stream always ends with usageMetadata; reaching
+        // the flush without one means the upstream body was cut mid-stream.
+        debugLogToFile('[SseTransform] stream ended without usageMetadata; upstream response was likely truncated mid-stream');
         const syntheticUsage = {
           response: {
             usageMetadata: {
