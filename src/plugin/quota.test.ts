@@ -10,7 +10,7 @@ vi.mock("./token", () => ({
 }))
 
 import { GEMINI_CLI_HEADERS, getAntigravityUserAgent } from "../constants.ts"
-import { checkAccountsQuota } from "./quota.ts"
+import { aggregateQuota, checkAccountsQuota } from "./quota.ts"
 import { refreshAccessToken } from "./token.ts"
 import type { AccountMetadataV3 } from "./storage.ts"
 import type { PluginClient } from "./types.ts"
@@ -135,3 +135,38 @@ describe("checkAccountsQuota", () => {
     }
   })
 })
+
+describe("aggregateQuota per-model entries", () => {
+  it("records each model's own quota next to the group minimum", () => {
+    const models = {
+      "gemini-3.8-flash": { quotaInfo: { remainingFraction: 0.5, resetTime: "2030-01-01T00:00:00Z" } },
+      "gemini-3-pro": { quotaInfo: { remainingFraction: 0.05 } },
+    } as Parameters<typeof aggregateQuota>[0];
+
+    const summary = aggregateQuota(models);
+
+    const flash = summary.groups["gemini-flash"];
+    expect(flash?.remainingFraction).toBe(0.5);
+    expect(flash?.models?.["gemini-3.8-flash"]?.remainingFraction).toBe(0.5);
+    expect(flash?.models?.["gemini-3.8-flash"]?.resetTime).toBe("2030-01-01T00:00:00Z");
+
+    const pro = summary.groups["gemini-pro"];
+    expect(pro?.remainingFraction).toBe(0.05);
+    expect(pro?.models?.["gemini-3-pro"]?.remainingFraction).toBe(0.05);
+    expect(pro?.models?.["gemini-3-pro"]?.resetTime).toBeUndefined();
+  });
+
+  it("keeps a quota-less model's entry without a remaining fraction", () => {
+    const models = {
+      "gemini-3.8-flash": { quotaInfo: { remainingFraction: 0.4 } },
+      "gemini-3.8-pro": {},
+    } as Parameters<typeof aggregateQuota>[0];
+
+    const summary = aggregateQuota(models);
+
+    const pro = summary.groups["gemini-pro"];
+    expect(pro?.remainingFraction).toBeUndefined();
+    expect(pro?.models?.["gemini-3.8-pro"]?.remainingFraction).toBeUndefined();
+    expect(summary.groups["gemini-flash"]?.models?.["gemini-3.8-flash"]?.remainingFraction).toBe(0.4);
+  });
+});

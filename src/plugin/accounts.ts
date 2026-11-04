@@ -4,7 +4,7 @@ import type { OAuthAuthDetails, RefreshParts } from "./types";
 import type { AccountSelectionStrategy } from "./config/schema";
 import { getHealthTracker, getTokenTracker, selectHybridAccount, type AccountWithMetrics } from "./rotation";
 import { generateFingerprint, updateFingerprintVersion, type Fingerprint, type FingerprintVersion, MAX_FINGERPRINT_HISTORY } from "./fingerprint";
-import type { QuotaGroup, QuotaGroupSummary } from "./quota";
+import type { QuotaGroup, QuotaGroupSummary, QuotaModelSummary } from "./quota";
 import { getModelFamily } from "./transform/model-resolver";
 import { debugLogToFile } from "./debug";
 import { formatAccountLabel } from "./logging-utils";
@@ -303,6 +303,33 @@ export function resolveQuotaGroup(family: ModelFamily, model?: string | null): Q
   return family === "claude" ? "claude" : "gemini-pro";
 }
 
+/** Candidate keys for a requested model in the per-model quota map: the raw
+ * name plus variants with the antigravity quota prefix, thinking-tier suffix,
+ * and -preview suffix stripped - the same transforms resolveModelForHeaderStyle
+ * applies before the request is sent. */
+function quotaModelCandidates(model?: string | null): string[] {
+  if (!model) return [];
+  const lower = model.toLowerCase();
+  const stripped = lower
+    .replace(/^antigravity-/i, "")
+    .replace(/-(minimal|low|medium|high)$/i, "")
+    .replace(/-preview$/i, "");
+  return [...new Set([model, lower, stripped])];
+}
+
+/** The requested model's own quota entry, falling back through name variants. */
+function perModelQuotaEntry(
+  groupData: QuotaGroupSummary | undefined,
+  model?: string | null
+): QuotaModelSummary | undefined {
+  if (!groupData?.models) return undefined;
+  for (const key of quotaModelCandidates(model)) {
+    const entry = groupData.models[key];
+    if (entry) return entry;
+  }
+  return undefined;
+}
+
 function isOverSoftQuotaThreshold(
   account: ManagedAccount,
   family: ModelFamily,
@@ -322,13 +349,17 @@ function isOverSoftQuotaThreshold(
   const groupData = account.cachedQuota[quotaGroup];
   if (groupData?.remainingFraction == null) return false;
   
-  const remainingFraction = Math.max(0, Math.min(1, groupData.remainingFraction));
+  // Prefer the requested model's own quota entry over the group minimum, so a
+  // depleted sibling model no longer blocks a model that still has quota.
+  const modelEntry = perModelQuotaEntry(groupData, model);
+  const remainingFraction = Math.max(0, Math.min(1, modelEntry?.remainingFraction ?? groupData.remainingFraction));
   const usedPercent = (1 - remainingFraction) * 100;
   const isOverThreshold = usedPercent >= thresholdPercent;
   
   if (isOverThreshold) {
     const accountLabel = formatAccountLabel(account.email, account.index);
-    const resetSuffix = groupData.resetTime ? ` (resets: ${groupData.resetTime})` : "";
+    const resetTime = modelEntry?.resetTime ?? groupData.resetTime;
+    const resetSuffix = resetTime ? ` (resets: ${resetTime})` : "";
     const message = `[SoftQuota] Skipping ${accountLabel}: ${quotaGroup} usage ${usedPercent.toFixed(1)}% >= threshold ${thresholdPercent}%${resetSuffix}`;
     debugLogToFile(message);
   }
@@ -1095,7 +1126,8 @@ export class AccountManager {
         isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)
       ) {
         const groupData = a.cachedQuota?.[resolveQuotaGroup(family, model)];
-        const resetTimestamp = groupData?.resetTime ? Date.parse(groupData.resetTime) : NaN;
+        const resetTime = perModelQuotaEntry(groupData, model)?.resetTime ?? groupData?.resetTime;
+        const resetTimestamp = resetTime ? Date.parse(resetTime) : NaN;
         if (Number.isFinite(resetTimestamp) && resetTimestamp > now) {
           blockers.push(resetTimestamp - now);
         } else {
@@ -1488,8 +1520,9 @@ export class AccountManager {
     
     for (const acc of enabled) {
       const groupData = acc.cachedQuota?.[quotaGroup];
-      if (groupData?.resetTime) {
-        const resetTimestamp = Date.parse(groupData.resetTime);
+      const resetTime = perModelQuotaEntry(groupData, model)?.resetTime ?? groupData?.resetTime;
+      if (resetTime) {
+        const resetTimestamp = Date.parse(resetTime);
         if (Number.isFinite(resetTimestamp)) {
           waitTimes.push(Math.max(0, resetTimestamp - now));
         }

@@ -203,8 +203,9 @@ export interface AccountMetadataV3 {
   verificationRequiredAt?: number;
   verificationRequiredReason?: string;
   verificationUrl?: string;
-  /** Cached soft quota data */
-  cachedQuota?: Record<string, { remainingFraction?: number; resetTime?: string; modelCount: number }>;
+  /** Cached soft quota data. `models` mirrors QuotaGroupSummary.models from
+   * ./quota: per-model remaining quota used by account selection. */
+  cachedQuota?: Record<string, { remainingFraction?: number; resetTime?: string; modelCount: number; models?: Record<string, { remainingFraction?: number; resetTime?: string }> }>;
   cachedQuotaUpdatedAt?: number;
 }
 

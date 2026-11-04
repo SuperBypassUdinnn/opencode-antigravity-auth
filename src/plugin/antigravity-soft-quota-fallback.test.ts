@@ -211,3 +211,60 @@ describe("getMinWaitTimeForFamily sees every transient blocker", () => {
     expect(waitMs).toBe(60_000);
   });
 });
+
+/**
+ * The soft quota decision must read the requested model's own quota entry
+ * instead of the group minimum, so one depleted sibling model no longer
+ * blocks a model that still has quota.
+ */
+describe("per-model soft quota decision", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not block the requested model when its own quota is healthy", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.05,
+        modelCount: 2,
+        models: { "gemini-3.8-flash": { remainingFraction: 0.5 } },
+      },
+    });
+
+    const selected = manager.getNextForFamily(
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      "antigravity",
+      90,
+      30 * 60_000,
+    );
+
+    expect(selected?.index).toBe(0);
+  });
+
+  it("still blocks a model with no own entry when the group minimum is exhausted", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    for (const account of accounts) {
+      manager.updateQuotaCache(account!.index, {
+        "gemini-flash": {
+          remainingFraction: 0.05,
+          modelCount: 2,
+          models: { "gemini-3.8-flash": { remainingFraction: 0.5 } },
+        },
+      });
+    }
+
+    const selected = manager.getNextForFamily(
+      "gemini",
+      "gemini-3.9-flash",
+      "antigravity",
+      90,
+      30 * 60_000,
+    );
+
+    expect(selected).toBeNull();
+  });
+});

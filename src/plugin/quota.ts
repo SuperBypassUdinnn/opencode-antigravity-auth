@@ -25,10 +25,19 @@ const SWEEP_BUDGET_MS = 20000;
 
 export type QuotaGroup = "claude" | "gemini-pro" | "gemini-flash";
 
+export interface QuotaModelSummary {
+  remainingFraction?: number;
+  resetTime?: string;
+}
+
 export interface QuotaGroupSummary {
   remainingFraction?: number;
   resetTime?: string;
   modelCount: number;
+  /** Remaining quota per model when the backend reports quotaInfo per model.
+   * Account selection prefers the requested model's own entry over the group
+   * minimum, so one depleted model no longer blocks the whole group. */
+  models?: Record<string, QuotaModelSummary>;
 }
 
 export interface QuotaSummary {
@@ -142,8 +151,9 @@ function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup
   return family === "gemini-flash" ? "gemini-flash" : "gemini-pro";
 }
 
-function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>, selectable?: Set<string>): QuotaSummary {
+export function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>, selectable?: Set<string>): QuotaSummary {
   const groups: Partial<Record<QuotaGroup, QuotaGroupSummary>> = {};
+  const perModel: Partial<Record<QuotaGroup, Record<string, QuotaModelSummary>>> = {};
   const catalog: Record<string, AvailableModel> = {};
   if (!models) {
     return { groups, modelCount: 0 };
@@ -199,10 +209,17 @@ function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>, selec
       }
     }
 
+    const modelSummaries = (perModel[group] ??= {});
+    const modelSummary: QuotaModelSummary = {};
+    if (remainingFraction !== undefined) modelSummary.remainingFraction = remainingFraction;
+    if (resetTime) modelSummary.resetTime = resetTime;
+    modelSummaries[modelName] = modelSummary;
+
     groups[group] = {
       remainingFraction: nextRemaining,
       resetTime: nextResetTime,
       modelCount: nextCount,
+      models: modelSummaries,
     };
   }
 
