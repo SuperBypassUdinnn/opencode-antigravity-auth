@@ -268,3 +268,54 @@ describe("per-model soft quota decision", () => {
     expect(selected).toBeNull();
   });
 });
+
+/**
+ * The fatal "No account can serve" error must name the real per-account
+ * blockers instead of blaming the soft quota threshold for everything.
+ */
+describe("describeAccountBlockers", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("names rate limits, cooldowns, and soft quota per account", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.markRateLimited(accounts[0]!, 30_000, "gemini", "antigravity");
+    manager.markAccountCoolingDown(accounts[1]!, 30_000, "validation-required");
+    manager.updateQuotaCache(accounts[1]!.index, {
+      "gemini-flash": { remainingFraction: 0.05, modelCount: 1 },
+    });
+
+    const lines = manager.describeAccountBlockers(
+      "gemini",
+      "gemini-3.8-flash",
+      "antigravity",
+      true,
+      () => true,
+      90,
+      30 * 60_000,
+    );
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("antigravity pool rate-limited");
+    expect(lines[0]).toContain("resets in");
+    expect(lines[1]).toContain("cooling down after validation-required");
+    expect(lines[1]).toContain("over the 90% soft quota threshold");
+    expect(lines[1]).toContain("used 95.0%");
+  });
+
+  it("omits accounts that are not blocked", () => {
+    const manager = createManager();
+    const lines = manager.describeAccountBlockers(
+      "gemini",
+      null,
+      "antigravity",
+      false,
+      () => true,
+      90,
+      30 * 60_000,
+    );
+    expect(lines).toEqual([]);
+  });
+});

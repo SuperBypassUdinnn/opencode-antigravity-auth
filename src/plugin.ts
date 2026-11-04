@@ -42,6 +42,7 @@ import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
 import { AccountManager, type ModelFamily, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
+import { formatWaitTime } from "./plugin/logging-utils";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
 import { loadConfig, initRuntimeConfig, type AntigravityConfig } from "./plugin/config";
 import { createSessionRecoveryHook, getRecoverySuccessToast } from "./plugin/recovery";
@@ -1073,20 +1074,6 @@ function buildQuotaExhaustedMessage(quota: QuotaExhaustion, accountCount: number
   const detail = quota.detail ? ` Provider message: ${quota.detail}` : "";
   return `Google quota exhausted${target}: all ${accountCount} connected account(s) ran out of ${quota.quotaName} quota.${reset} `
     + `Add another account with \`opencode auth login\` or wait for the quota to reset.${detail}`;
-}
-
-function formatWaitTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.ceil(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) {
-    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
 // Progressive rate limit retry delays
@@ -2965,14 +2952,30 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   );
                   selectionGuard.recordAttempt();
                   if (waitMs <= 0) {
-                    // Zero means the pool still reports quota somewhere, so a
-                    // rate-limit error would name a reset that does not exist.
-                    // Every candidate is simply unusable for this request.
-                    pushDebug(
-                      `no-attemptable-account family=${family} accounts=${accountCount} waitMs=0 threshold=${config.soft_quota_threshold_percent}`,
+                    // Zero means no derivable wait: name the actual per-account
+                    // blockers instead of blaming one mechanism for all of them.
+                    const blockers = accountManager.describeAccountBlockers(
+                      family,
+                      model,
+                      preferredHeaderStyle,
+                      !allowQuotaFallback,
+                      eligible,
+                      config.soft_quota_threshold_percent,
+                      softQuotaCacheTtlMs,
                     );
+                    pushDebug(
+                      `no-attemptable-account family=${family} accounts=${accountCount} waitMs=0 threshold=${config.soft_quota_threshold_percent} blockers=${blockers.length}`,
+                    );
+                    const shown = blockers.slice(0, 8);
+                    const more = blockers.length > shown.length
+                      ? `\n... and ${blockers.length - shown.length} more blocked account(s).`
+                      : "";
+                    const breakdown = blockers.length > 0
+                      ? `${shown.join("\n")}${more}`
+                      : "No enabled+eligible account reports a blocker; the pool was filtered by model access.";
                     throw new Error(
-                      `No account can serve ${model ?? family}: the pool still reports quota, but every candidate is over the ${config.soft_quota_threshold_percent}% soft quota threshold, rate-limited for the alternate quota pool, or cooling down. ` +
+                      `No account can serve ${model ?? family}: the pool still reports quota, but no candidate is usable right now.\n` +
+                      `${breakdown}\n` +
                       `Lower soft_quota_threshold_percent, add another account with \`opencode auth login\`, or wait for the quota to refresh.`,
                     );
                   }

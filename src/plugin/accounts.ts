@@ -7,7 +7,7 @@ import { generateFingerprint, updateFingerprintVersion, type Fingerprint, type F
 import type { QuotaGroup, QuotaGroupSummary, QuotaModelSummary } from "./quota";
 import { getModelFamily } from "./transform/model-resolver";
 import { debugLogToFile } from "./debug";
-import { formatAccountLabel } from "./logging-utils";
+import { formatAccountLabel, formatWaitTime } from "./logging-utils";
 
 
 export type { ModelFamily, HeaderStyle, CooldownReason } from "./storage";
@@ -1141,6 +1141,56 @@ export class AccountManager {
     }
 
     return waitTimes.length > 0 ? Math.min(...waitTimes) : 0;
+  }
+
+  /** One line per blocked account naming every active blocker (rate limit,
+   * cooldown, soft quota), for error messages that must not blame the wrong
+   * mechanism. Accounts with no active blocker are omitted. */
+  describeAccountBlockers(
+    family: ModelFamily,
+    model: string | null | undefined,
+    headerStyle: HeaderStyle | undefined,
+    strict: boolean,
+    eligible: (account: ManagedAccount) => boolean,
+    softQuotaThresholdPercent: number,
+    softQuotaCacheTtlMs: number,
+  ): string[] {
+    const now = nowMs();
+    const lines: string[] = [];
+    for (const a of this.accounts) {
+      if (a.enabled === false || !eligible(a)) continue;
+      const causes: string[] = [];
+      if (family === "claude") {
+        const t = a.rateLimitResetTimes.claude;
+        if (t !== undefined && t > now) {
+          causes.push(`claude quota rate-limited (resets in ${formatWaitTime(t - now)})`);
+        }
+      } else {
+        const pools = strict && headerStyle ? [headerStyle] : (["antigravity", "gemini-cli"] as HeaderStyle[]);
+        for (const style of pools) {
+          const pending = [a.rateLimitResetTimes[getQuotaKey(family, style, model)], a.rateLimitResetTimes[getQuotaKey(family, style)]]
+            .filter((t): t is number => t !== undefined && t > now);
+          if (pending.length > 0) {
+            causes.push(`${style} pool rate-limited (resets in ${formatWaitTime(Math.max(...pending) - now)})`);
+          }
+        }
+      }
+      if (a.coolingDownUntil !== undefined && a.coolingDownUntil > now) {
+        causes.push(`cooling down after ${a.cooldownReason ?? "failure"} (${formatWaitTime(a.coolingDownUntil - now)} left)`);
+      }
+      if (softQuotaThresholdPercent < 100 && isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) {
+        const groupData = a.cachedQuota?.[resolveQuotaGroup(family, model)];
+        const entry = perModelQuotaEntry(groupData, model);
+        const remaining = entry?.remainingFraction ?? groupData?.remainingFraction;
+        const used = remaining === undefined ? "unknown" : `${((1 - remaining) * 100).toFixed(1)}%`;
+        const resetTime = entry?.resetTime ?? groupData?.resetTime;
+        causes.push(`over the ${softQuotaThresholdPercent}% soft quota threshold (used ${used}${resetTime ? `, resets ${resetTime}` : ""})`);
+      }
+      if (causes.length > 0) {
+        lines.push(`${formatAccountLabel(a.email, a.index)}: ${causes.join("; ")}`);
+      }
+    }
+    return lines;
   }
 
   getAccounts(): ManagedAccount[] {
