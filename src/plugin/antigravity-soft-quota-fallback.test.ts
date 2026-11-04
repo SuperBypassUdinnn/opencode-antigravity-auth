@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountManager } from "./accounts.ts";
+import { getHealthTracker, initHealthTracker } from "./rotation.ts";
 import type { AccountStorageV4 } from "./storage.ts";
 
 /**
@@ -317,5 +318,61 @@ describe("describeAccountBlockers", () => {
       30 * 60_000,
     );
     expect(lines).toEqual([]);
+  });
+});
+
+/**
+ * Hybrid selection also gates accounts by health score. When every account is
+ * health-gated, the wait query and the fatal error message must say so instead
+ * of reporting "0 ms, nothing blocked" and aborting the request.
+ */
+describe("health gate visibility", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    initHealthTracker({});
+  });
+
+  it("waits for health recovery instead of reporting 0", () => {
+    const manager = createManager();
+    const tracker = getHealthTracker();
+    for (const account of manager.getAccounts()) {
+      tracker.recordFailure(account!.index);
+      tracker.recordFailure(account!.index);
+    }
+
+    // 70 - 20 * 2 = 30; recovering to minUsable 50 at 2 points/hour = 10h.
+    const waitMs = manager.getMinWaitTimeForFamily(
+      "gemini",
+      "gemini-3.8-flash",
+      "antigravity",
+      false,
+      () => true,
+      90,
+      30 * 60_000,
+    );
+
+    expect(waitMs).toBe(36_000_000);
+  });
+
+  it("names health-gated accounts in the blocker breakdown", () => {
+    const manager = createManager();
+    const tracker = getHealthTracker();
+    for (const account of manager.getAccounts()) {
+      tracker.recordFailure(account!.index);
+      tracker.recordFailure(account!.index);
+    }
+
+    const lines = manager.describeAccountBlockers(
+      "gemini",
+      "gemini-3.8-flash",
+      "antigravity",
+      true,
+      () => true,
+      90,
+      30 * 60_000,
+    );
+
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toContain("health score too low after failures (30/100, min 50)");
   });
 });

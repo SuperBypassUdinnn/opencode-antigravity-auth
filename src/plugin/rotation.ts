@@ -134,6 +134,20 @@ export class HealthScoreTracker {
   }
 
   /**
+   * Minimum score an account needs to be hybrid-selectable.
+   */
+  getMinUsable(): number {
+    return this.config.minUsable;
+  }
+
+  /**
+   * Points recovered per hour of rest, for wait estimation.
+   */
+  getRecoveryRatePerHour(): number {
+    return this.config.recoveryRatePerHour;
+  }
+
+  /**
    * Get consecutive failure count for an account.
    */
   getConsecutiveFailures(accountIndex: number): number {

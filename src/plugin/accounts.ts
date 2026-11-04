@@ -1073,10 +1073,13 @@ export class AccountManager {
     softQuotaCacheTtlMs: number = 10 * 60 * 1000,
   ): number {
     // Mirror the full skip predicate used by account selection: an account is
-    // only available when it is not rate-limited, not cooling down, and not
-    // over the soft quota threshold. The previous version only looked at rate
-    // limits, so a pool blocked by cooldowns or the soft quota guard was
-    // reported as "available in 0 ms" and callers treated that as fatal.
+    // only available when it is not rate-limited, not cooling down, not over
+    // the soft quota threshold, and healthy enough for hybrid selection. The
+    // previous version only looked at rate limits, so a pool blocked by
+    // cooldowns or the soft quota guard was reported as "available in 0 ms"
+    // and callers treated that as fatal.
+    const healthTracker = getHealthTracker();
+    const minUsable = healthTracker.getMinUsable();
     const available = this.accounts.filter((a) => {
       clearExpiredRateLimits(a);
       if (a.enabled === false || !eligible(a)) return false;
@@ -1086,6 +1089,7 @@ export class AccountManager {
       if (rateLimited) return false;
       if (this.isAccountCoolingDown(a)) return false;
       if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) return false;
+      if (healthTracker.getScore(a.index) < minUsable) return false;
       return true;
     });
     if (available.length > 0) {
@@ -1137,6 +1141,17 @@ export class AccountManager {
           blockers.push(SOFT_QUOTA_UNKNOWN_WAIT_MS);
         }
       }
+      const healthScore = healthTracker.getScore(a.index);
+      if (healthScore < minUsable) {
+        // Health only recovers passively, at the configured points-per-hour
+        // while the account rests, so the wait until it becomes selectable
+        // again is derivable. Without a positive rate there is nothing to
+        // derive; fall back to a bounded wait.
+        const recoveryRate = healthTracker.getRecoveryRatePerHour();
+        blockers.push(recoveryRate > 0
+          ? Math.ceil(((minUsable - healthScore) / recoveryRate) * 3_600_000)
+          : SOFT_QUOTA_UNKNOWN_WAIT_MS);
+      }
       if (blockers.length > 0) waitTimes.push(Math.max(...blockers));
     }
 
@@ -1156,6 +1171,8 @@ export class AccountManager {
     softQuotaCacheTtlMs: number,
   ): string[] {
     const now = nowMs();
+    const healthTracker = getHealthTracker();
+    const minUsable = healthTracker.getMinUsable();
     const lines: string[] = [];
     for (const a of this.accounts) {
       if (a.enabled === false || !eligible(a)) continue;
@@ -1185,6 +1202,10 @@ export class AccountManager {
         const used = remaining === undefined ? "unknown" : `${((1 - remaining) * 100).toFixed(1)}%`;
         const resetTime = entry?.resetTime ?? groupData?.resetTime;
         causes.push(`over the ${softQuotaThresholdPercent}% soft quota threshold (used ${used}${resetTime ? `, resets ${resetTime}` : ""})`);
+      }
+      const healthScore = healthTracker.getScore(a.index);
+      if (healthScore < minUsable) {
+        causes.push(`health score too low after failures (${healthScore}/100, min ${minUsable})`);
       }
       if (causes.length > 0) {
         lines.push(`${formatAccountLabel(a.email, a.index)}: ${causes.join("; ")}`);
