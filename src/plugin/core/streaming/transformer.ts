@@ -412,3 +412,46 @@ export function createStreamingTransformer(
     },
   });
 }
+
+/** Human-readable reason for a stream abort/cancel, for the debug file. */
+export function describeStreamAbortReason(reason: unknown): string {
+  if (reason instanceof Error) {
+    return reason.message || reason.name;
+  }
+  if (typeof reason === 'string') {
+    return reason;
+  }
+  try {
+    return String(reason);
+  } catch (_) {
+    return 'unknown reason';
+  }
+}
+
+/** Wrap the upstream body so a mid-stream read failure is logged with its
+ * real reason before the SDK re-wraps it as the generic "Failed to process
+ * successful response" error. The runtime never invokes a transformer's
+ * abort handler (verified on Node), so the logging lives on the source-side
+ * readable: pull-based, one upstream read per consumer pull. */
+export function wrapBodyWithAbortLogging(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        debugLogToFile(`[SseTransform] stream aborted: ${describeStreamAbortReason(error).slice(0, SSE_DEBUG_SNIPPET_MAX)}`);
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      debugLogToFile(`[SseTransform] stream cancelled: ${describeStreamAbortReason(reason).slice(0, SSE_DEBUG_SNIPPET_MAX)}`);
+      return reader.cancel(reason);
+    },
+  });
+}

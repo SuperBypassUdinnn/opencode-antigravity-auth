@@ -15,6 +15,7 @@ import {
   createStreamingTransformer,
   transformSseLine,
   transformStreamingPayload,
+  wrapBodyWithAbortLogging,
 } from "./core/streaming";
 import { defaultSignatureStore } from "./stores/signature-store";
 import {
@@ -1721,7 +1722,7 @@ export async function transformAntigravityResponse(
         // injectSyntheticThinking removed - keep_thinking now unified with debug via debugText
       },
     );
-    return new Response(response.body.pipeThrough(streamingTransformer), {
+    return new Response(wrapBodyWithAbortLogging(response.body).pipeThrough(streamingTransformer), {
       status: response.status,
       statusText: response.statusText,
       headers,
@@ -1910,4 +1911,5 @@ export const __testExports = {
   transformSseLine,
   transformStreamingPayload,
   createStreamingTransformer,
+  wrapBodyWithAbortLogging,
 };

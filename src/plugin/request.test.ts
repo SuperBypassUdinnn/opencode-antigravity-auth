@@ -39,6 +39,7 @@ const {
   transformStreamingPayload,
   createStreamingTransformer,
   transformSseLine,
+  wrapBodyWithAbortLogging,
 } = __testExports;
 
 function createMockSignatureStore(): SignatureStore {
@@ -1524,6 +1525,50 @@ it("removes x-api-key header", () => {
       const output = outputChunks.map((chunk) => decoder.decode(chunk)).join("");
       expect(output).toContain("partial");
       expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("without usageMetadata"));
+    });
+
+    it("logs the real reason when the upstream stream errors mid-read", async () => {
+      const encoder = new TextEncoder();
+      // controller.error() discards already-enqueued chunks, so the source
+      // must error on a LATER pull to simulate a mid-stream cut.
+      let pulls = 0;
+      const source = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          if (pulls === 1) {
+            controller.enqueue(encoder.encode("data: partial\n"));
+          } else {
+            controller.error(new Error("connection reset upstream"));
+          }
+        },
+      });
+      const reader = wrapBodyWithAbortLogging(source).getReader();
+
+      const first = await reader.read();
+      expect(first.done).toBe(false);
+      await expect(reader.read()).rejects.toThrow("connection reset upstream");
+      await expect(reader.read()).rejects.toThrow("connection reset upstream");
+
+      // The error reaches the SDK as the generic wrapper message; the debug
+      // file must keep the real cause.
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("stream aborted"));
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("connection reset upstream"));
+    });
+
+    it("logs a consumer-side cancellation with its reason", async () => {
+      const encoder = new TextEncoder();
+      const source = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: chunk\n"));
+        },
+      });
+      const reader = wrapBodyWithAbortLogging(source).getReader();
+
+      await reader.read();
+      await reader.cancel("user interrupted");
+
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("stream cancelled"));
+      expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("user interrupted"));
     });
   });
 });
