@@ -427,3 +427,65 @@ describe("hybrid selection per-pool rate-limit check", () => {
     expect(selected?.index).toBe(1);
   });
 });
+
+/**
+ * The backend cache stores tier-suffixed model names (gemini-3.8-flash-high
+ * and friends), so a bare request like antigravity-gemini-3.8-flash must
+ * find its tier variants before falling back to the group minimum.
+ */
+describe("quota candidates match tier-suffixed cache keys", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads the tier-suffixed entry for a bare request instead of the group minimum", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    for (const account of accounts) {
+      manager.updateQuotaCache(account!.index, {
+        "gemini-flash": {
+          remainingFraction: 0.05,
+          modelCount: 2,
+          models: { "gemini-3.8-flash-high": { remainingFraction: 0.5 } },
+        },
+      });
+    }
+
+    const selected = manager.getNextForFamily(
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      "antigravity",
+      90,
+      30 * 60_000,
+    );
+
+    expect(selected?.index).toBe(0);
+  });
+
+  it("prefers the request's own tier when the cache carries several tiers", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    for (const account of accounts) {
+      manager.updateQuotaCache(account!.index, {
+        "gemini-flash": {
+          remainingFraction: 0.05,
+          modelCount: 3,
+          models: {
+            "gemini-3.8-flash-high": { remainingFraction: 0.5 },
+            "gemini-3.8-flash-low": { remainingFraction: 0.02 },
+          },
+        },
+      });
+    }
+
+    const selected = manager.getNextForFamily(
+      "gemini",
+      "antigravity-gemini-3.8-flash-low",
+      "antigravity",
+      90,
+      30 * 60_000,
+    );
+
+    expect(selected).toBeNull();
+  });
+});

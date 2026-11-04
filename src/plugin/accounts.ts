@@ -310,11 +310,22 @@ export function resolveQuotaGroup(family: ModelFamily, model?: string | null): Q
 function quotaModelCandidates(model?: string | null): string[] {
   if (!model) return [];
   const lower = model.toLowerCase();
-  const stripped = lower
-    .replace(/^antigravity-/i, "")
-    .replace(/-(minimal|low|medium|high)$/i, "")
+  const prefixStripped = lower.replace(/^antigravity-/i, "");
+  const tierMatch = prefixStripped.match(/-(minimal|low|medium|high|tiered)$/i);
+  const ownTier = tierMatch?.[1] ? `-${tierMatch[1].toLowerCase()}` : undefined;
+  const base = prefixStripped
+    .replace(/-(minimal|low|medium|high|tiered)$/i, "")
     .replace(/-preview$/i, "");
-  return [...new Set([model, lower, stripped])];
+  // The cache stores the tier-suffixed names the backend reports (e.g.
+  // gemini-3.8-flash-high), so a bare request must also try the tier
+  // variants. The request's own tier, if any, wins before the defaults,
+  // and -high leads the defaults because bare gemini-3 requests resolve
+  // to the high tier in practice.
+  const candidates = [model, lower, prefixStripped, base];
+  for (const tier of [...(ownTier ? [ownTier] : []), "-high", "-medium", "-low", "-minimal", "-tiered"]) {
+    candidates.push(`${base}${tier}`);
+  }
+  return [...new Set(candidates)];
 }
 
 /** The requested model's own quota entry, falling back through name variants. */
