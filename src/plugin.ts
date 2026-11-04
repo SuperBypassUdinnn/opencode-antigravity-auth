@@ -24,6 +24,7 @@ import {
   isDebugEnabled,
   getLogFilePath,
   initializeDebug,
+  debugLogToFile,
 } from "./plugin/debug";
 import {
   buildThinkingWarmupBody,
@@ -2201,6 +2202,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
             
             // Check if this header style is rate-limited for this account
             if (accountManager.isRateLimitedForHeaderStyle(account, family, headerStyle, model)) {
+              debugLogToFile(`[SelectionGate] selected-but-skipped account=${account.index} email=${account.email ?? "-"} family=${family} style=${headerStyle} model=${model ?? "-"} reason=rate-limited-for-style`);
               // Antigravity-first fallback: exhaust antigravity across ALL accounts before gemini-cli
               if (allowQuotaFallback && family === "gemini" && headerStyle === "antigravity") {
                 // Check if ANY other account has antigravity available

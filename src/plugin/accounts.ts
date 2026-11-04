@@ -660,6 +660,10 @@ export class AccountManager {
           return selected;
         }
       }
+      // Sticky may still rescue the current account below, but the hybrid
+      // exclusion reasons explain why the health/token-aware path gave up.
+      const hybridExclusions = this.describeSelectionExclusions(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
+      debugLogToFile(`[SelectionGate] hybrid no candidate family=${family} model=${model ?? "-"} style=${headerStyle} excluded: ${hybridExclusions || "none"}`);
     }
 
     // Fallback: sticky selection (used when hybrid finds no candidates)
@@ -695,6 +699,33 @@ export class AccountManager {
     return next;
   }
 
+  /** One compact reason per enabled+eligible account that the selection gates
+   * excluded, for the debug file. Returns "" when nothing was excluded. */
+  private describeSelectionExclusions(
+    family: ModelFamily,
+    model: string | null | undefined,
+    headerStyle: HeaderStyle,
+    softQuotaThresholdPercent: number,
+    softQuotaCacheTtlMs: number,
+    eligible: (account: ManagedAccount) => boolean,
+  ): string {
+    const healthTracker = getHealthTracker();
+    const minUsable = healthTracker.getMinUsable();
+    const parts: string[] = [];
+    for (const a of this.accounts) {
+      if (a.enabled === false || !eligible(a)) continue;
+      clearExpiredRateLimits(a);
+      const reasons: string[] = [];
+      if (isRateLimitedForHeaderStyle(a, family, headerStyle, model)) reasons.push("rate-limited");
+      if (this.isAccountCoolingDown(a)) reasons.push("cooling-down");
+      if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) reasons.push("soft-quota");
+      const healthScore = healthTracker.getScore(a.index);
+      if (healthScore < minUsable) reasons.push(`health=${healthScore}<${minUsable}`);
+      if (reasons.length > 0) parts.push(`${a.index}=${reasons.join("+")}`);
+    }
+    return parts.join("; ");
+  }
+
   getNextForFamily(family: ModelFamily, model?: string | null, headerStyle: HeaderStyle = "antigravity", softQuotaThresholdPercent: number = 100, softQuotaCacheTtlMs: number = 10 * 60 * 1000, eligible: (account: ManagedAccount) => boolean = () => true): ManagedAccount | null {
     const available = this.accounts.filter((a) => {
       clearExpiredRateLimits(a);
@@ -705,6 +736,10 @@ export class AccountManager {
     });
 
     if (available.length === 0) {
+      // Why nothing qualified: this is the exact question a fatal
+      // "no candidate" incident needs answered after the fact.
+      const exclusions = this.describeSelectionExclusions(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
+      debugLogToFile(`[SelectionGate] no candidate family=${family} model=${model ?? "-"} style=${headerStyle} excluded: ${exclusions || "none"}`);
       return null;
     }
 
