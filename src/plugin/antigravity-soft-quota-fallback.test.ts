@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountManager } from "./accounts.ts";
-import { getHealthTracker, initHealthTracker } from "./rotation.ts";
+import { getHealthTracker, initHealthTracker, initTokenTracker } from "./rotation.ts";
 import type { AccountStorageV4 } from "./storage.ts";
 
 /**
@@ -374,5 +374,56 @@ describe("health gate visibility", () => {
 
     expect(lines.length).toBe(2);
     expect(lines[0]).toContain("health score too low after failures (30/100, min 50)");
+  });
+});
+
+/**
+ * Hybrid metrics must use the same per-pool rate-limit check as the per-round
+ * skip logic. The old both-pools check selected accounts carrying only an
+ * antigravity-pool mark, which the round loop then skipped — burning rounds
+ * without ever sending a request (the account #24 incident).
+ */
+describe("hybrid selection per-pool rate-limit check", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    initHealthTracker({});
+    initTokenTracker({});
+  });
+
+  it("selects nothing when every account is marked for the requested pool", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
+    manager.markRateLimited(accounts[1]!, 60_000, "gemini", "antigravity");
+
+    const selected = manager.getCurrentOrNextForFamily(
+      "gemini",
+      "gemini-3.8-flash",
+      "hybrid",
+      "antigravity",
+      false,
+      90,
+      30 * 60_000,
+    );
+
+    expect(selected).toBeNull();
+  });
+
+  it("skips the marked account and selects the clean one", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
+
+    const selected = manager.getCurrentOrNextForFamily(
+      "gemini",
+      "gemini-3.8-flash",
+      "hybrid",
+      "antigravity",
+      false,
+      90,
+      30 * 60_000,
+    );
+
+    expect(selected?.index).toBe(1);
   });
 });

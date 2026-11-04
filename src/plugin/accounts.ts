@@ -637,7 +637,11 @@ export class AccountManager {
             index: acc.index,
             lastUsed: acc.lastUsed,
             healthScore: healthTracker.getScore(acc.index),
-            isRateLimited: isRateLimitedForFamily(acc, family, model) || 
+            // Per-pool check, mirroring the per-round skip check and the
+            // getNextForFamily filter. The old both-pools check selected
+            // accounts it would immediately skip when only one quota pool
+            // carried a mark, burning rounds without sending anything.
+            isRateLimited: isRateLimitedForHeaderStyle(acc, family, headerStyle, model) ||
                           isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model),
             isCoolingDown: this.isAccountCoolingDown(acc),
           };
@@ -646,7 +650,7 @@ export class AccountManager {
       // Get current account index for stickiness
       const currentIndex = this.currentAccountIndexByFamily[family] ?? null;
       
-      const selectedIndex = selectHybridAccount(accountsWithMetrics, tokenTracker, currentIndex);
+      const selectedIndex = selectHybridAccount(accountsWithMetrics, tokenTracker, currentIndex, healthTracker.getMinUsable());
       if (selectedIndex !== null) {
         const selected = this.accounts[selectedIndex];
         if (selected) {
