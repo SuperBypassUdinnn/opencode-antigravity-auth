@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions } from "./models-v2"
-import { resolveModelForHeaderStyle } from "../transform/model-resolver"
+import { isCatalogThinkingModel, resolveModelForHeaderStyle } from "../transform/model-resolver"
 
 describe("OpenCode V2 models", () => {
   it("registers tools, modalities, and V2 variant overlays", () => {
@@ -58,5 +58,16 @@ describe("OpenCode V2 models", () => {
       ],
     })
     expect(catalog["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
+  })
+})
+
+describe("catalog thinking registration", () => {
+  it("registers catalog models whose displayName marks them as (Thinking)", () => {
+    buildAccountModelDefinitions({
+      "claude-sonnet-9-8": { displayName: "Claude Sonnet 9.8 (Thinking)" },
+      "claude-plain-9-8": { displayName: "Claude Plain 9.8" },
+    })
+    expect(isCatalogThinkingModel("claude-sonnet-9-8")).toBe(true)
+    expect(isCatalogThinkingModel("claude-plain-9-8")).toBe(false)
   })
 })

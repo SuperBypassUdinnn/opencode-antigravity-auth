@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   ADVERTISED_TIER_SUFFIX_MODEL_IDS,
+  isCatalogThinkingModel,
+  registerCatalogThinkingModelIds,
   applyTierModelSuffix,
   isAdvertisedTierSuffixModel,
   registerTierSuffixModelBases,
@@ -417,5 +419,15 @@ describe("tiered catalog families", () => {
     expect(applyTierModelSuffix("gemini-9-flash", "medium")).toBe("gemini-9-flash-low");
     expect(applyTierModelSuffix("gemini-9.1-flash", "high")).toBe("gemini-9.1-flash-low");
     expect(applyTierModelSuffix("gemini-9.1-flash", "minimal")).toBe("gemini-9.1-flash-low");
+  });
+});
+
+describe("catalog thinking registry", () => {
+  it("marks registered models as thinking-capable with or without the quota prefix", () => {
+    registerCatalogThinkingModelIds(["claude-sonnet-9-9"]);
+    expect(isCatalogThinkingModel("claude-sonnet-9-9")).toBe(true);
+    expect(isCatalogThinkingModel("antigravity-claude-sonnet-9-9")).toBe(true);
+    expect(isCatalogThinkingModel("claude-sonnet-9-9-high")).toBe(true);
+    expect(isCatalogThinkingModel("claude-unregistered-9-9")).toBe(false);
   });
 });

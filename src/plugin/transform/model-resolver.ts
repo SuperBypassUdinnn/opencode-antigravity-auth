@@ -80,6 +80,29 @@ export function registerAdvertisedModelIds(ids: Iterable<string>): void {
   for (const id of ids) advertisedModelIds.add(id.toLowerCase());
 }
 
+/** Backend IDs whose catalog displayName marks them as "(Thinking)". */
+const catalogThinkingModelIds = new Set<string>();
+
+/** Preserve thinking-capable IDs discovered from Google's account-specific catalog. */
+export function registerCatalogThinkingModelIds(ids: Iterable<string>): void {
+  for (const id of ids) catalogThinkingModelIds.add(id.toLowerCase());
+}
+
+/** True when Google's catalog lists this model as "(Thinking)". Some thinking
+ * models (e.g. Claude Sonnet 4.6) carry no "-thinking" id suffix, so the
+ * catalog displayName is the only reliable marker. Accepts names with or
+ * without the "antigravity-" quota prefix and strips a trailing thinking-tier
+ * suffix the same way the signature cache key does, so tier-variant ids
+ * (e.g. claude-opus-4-6-thinking-high) still match their catalog base. */
+export function isCatalogThinkingModel(model: string): boolean {
+  return catalogThinkingModelIds.has(
+    model
+      .replace(QUOTA_PREFIX_REGEX, "")
+      .replace(/-(minimal|low|medium|high)$/i, "")
+      .toLowerCase(),
+  );
+}
+
 const TIER_REGEX = /-(minimal|low|medium|high)$/;
 const QUOTA_PREFIX_REGEX = /^antigravity-/i;
 const GEMINI_3_PRO_REGEX = /^gemini-3(?:\.\d+)?-pro/i;

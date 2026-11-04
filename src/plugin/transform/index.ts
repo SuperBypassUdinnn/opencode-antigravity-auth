@@ -24,6 +24,8 @@ export {
   resolveModelForHeaderStyle,
   applyTierModelSuffix,
   registerTierSuffixModelBases,
+  registerCatalogThinkingModelIds,
+  isCatalogThinkingModel,
   isAdvertisedTierSuffixModel,
   getModelFamily,
   MODEL_ALIASES,

@@ -6,6 +6,7 @@ import {
   isGenerativeLanguageRequest,
   __testExports,
 } from "./request";
+import { registerCatalogThinkingModelIds } from "./transform";
 import { DEFAULT_CONFIG } from "./config";
 import { debugLogToFile, initializeDebug } from "./debug";
 import * as debugModule from "./debug";
@@ -1305,6 +1306,50 @@ it("removes x-api-key header", () => {
         expect(result.effectiveModel).toBe("gemini-2.5-flash");
       });
     });
+
+  describe("claude thinkingConfig injection", () => {
+    it("injects a default thinking config for thinking-suffixed opus ids", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/claude-opus-4-6-thinking:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
+        mockAccessToken,
+        mockProjectId,
+      );
+
+      const request = JSON.parse(result.init.body as string).request;
+      expect(request.generationConfig.thinkingConfig).toEqual({
+        include_thoughts: true,
+        thinking_budget: 32768,
+      });
+    });
+
+    it("injects the same default for catalog-marked sonnet ids without a thinking suffix", () => {
+      registerCatalogThinkingModelIds(["claude-sonnet-4-6"]);
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/claude-sonnet-4-6:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
+        mockAccessToken,
+        mockProjectId,
+      );
+
+      const request = JSON.parse(result.init.body as string).request;
+      expect(request.generationConfig.thinkingConfig).toEqual({
+        include_thoughts: true,
+        thinking_budget: 16000,
+      });
+    });
+
+    it("leaves claude ids the catalog does not mark as thinking untouched", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/claude-plain-9-9:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
+        mockAccessToken,
+        mockProjectId,
+      );
+
+      const request = JSON.parse(result.init.body as string).request;
+      expect(request.generationConfig?.thinkingConfig).toBeUndefined();
+    });
   });
 
   describe("transformAntigravityResponse", () => {
@@ -1416,6 +1461,8 @@ it("removes x-api-key header", () => {
         ),
       ).rejects.toMatchObject({ message: "THINKING_RECOVERY_NEEDED" });
     });
+
+  });
   });
 
   describe("SSE anomaly surfacing", () => {

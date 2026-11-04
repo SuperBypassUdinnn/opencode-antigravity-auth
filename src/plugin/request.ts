@@ -66,6 +66,7 @@ import {
   applyTierModelSuffix,
   isClaudeModel,
   isClaudeThinkingModel,
+  isCatalogThinkingModel,
   CLAUDE_THINKING_MAX_OUTPUT_TOKENS,
   type ThinkingTier,
 } from "./transform";
@@ -823,6 +824,10 @@ export function prepareAntigravityRequest(
 
   const isClaude = isClaudeModel(resolved.actualModel);
   const isClaudeThinking = isClaudeThinkingModel(resolved.actualModel);
+  // Catalog-driven capability: Google's catalog marks thinking models via the
+  // displayName (e.g. "Claude Sonnet 4.6 (Thinking)"), whose id carries no
+  // -thinking suffix. Treat catalog-marked claude models as thinking models.
+  const isClaudeThinkingCapable = isClaude && (isClaudeThinking || isCatalogThinkingModel(effectiveModel));
   const keepThinkingEnabled = getKeepThinking();
   const enableClaudePromptAutoCaching = options?.claudePromptAutoCaching ?? false;
 
@@ -901,10 +906,10 @@ export function prepareAntigravityRequest(
             }
 
             // Step 2: THEN inject signed thinking from cache (after stripping)
-            if (isClaudeThinking && keepThinkingEnabled && Array.isArray((req as any).contents)) {
+            if (isClaudeThinkingCapable && keepThinkingEnabled && Array.isArray((req as any).contents)) {
               (req as any).contents = ensureThinkingBeforeToolUseInContents((req as any).contents, signatureSessionKey);
             }
-            if (isClaudeThinking && keepThinkingEnabled && Array.isArray((req as any).messages)) {
+            if (isClaudeThinkingCapable && keepThinkingEnabled && Array.isArray((req as any).messages)) {
               (req as any).messages = ensureThinkingBeforeToolUseInMessages((req as any).messages, signatureSessionKey);
             }
 
@@ -913,7 +918,7 @@ export function prepareAntigravityRequest(
           }
         }
 
-        if (isClaudeThinking && keepThinkingEnabled && sessionId) {
+        if (isClaudeThinkingCapable && keepThinkingEnabled && sessionId) {
           const hasToolUse = requestObjects.some((req) =>
             (Array.isArray((req as any).contents) && hasToolUseInContents((req as any).contents)) ||
             (Array.isArray((req as any).messages) && hasToolUseInMessages((req as any).messages)),
@@ -988,10 +993,12 @@ export function prepareAntigravityRequest(
         const hasAssistantHistory = Array.isArray(requestPayload.contents) &&
           requestPayload.contents.some((c: any) => c?.role === "model" || c?.role === "assistant");
 
-        // Claude Sonnet 4.6 is non-thinking only.
-        // Ignore any client-provided thinkingConfig for this model.
+        // Ignore client-provided thinkingConfig for claude ids the catalog does
+        // NOT mark as "(Thinking)". Claude Sonnet 4.6 now ships as a thinking
+        // model per Google's catalog, so only catalog-unmarked sonnet stays
+        // non-thinking.
         const lowerEffective = effectiveModel.toLowerCase();
-        const isClaudeSonnetNonThinking = lowerEffective === "claude-sonnet-4-6";
+        const isClaudeSonnetNonThinking = lowerEffective === "claude-sonnet-4-6" && !isCatalogThinkingModel(effectiveModel);
         const effectiveUserThinkingConfig = (isClaudeSonnetNonThinking || isImageModel) ? undefined : userThinkingConfig;
 
         // For image models, add imageConfig instead of thinkingConfig
@@ -1030,7 +1037,10 @@ export function prepareAntigravityRequest(
         } else {
           const finalThinkingConfig = resolveThinkingConfig(
             effectiveUserThinkingConfig,
-            isClaudeSonnetNonThinking ? false : (resolved.isThinkingModel ?? isThinkingCapableModel(effectiveModel)),
+            isClaudeSonnetNonThinking
+              ? false
+              : (isCatalogThinkingModel(effectiveModel) ||
+                (resolved.isThinkingModel ?? isThinkingCapableModel(effectiveModel))),
             isClaude,
             hasAssistantHistory,
           );
@@ -1043,7 +1053,7 @@ export function prepareAntigravityRequest(
             // Build thinking config based on model type
             let thinkingConfig: Record<string, unknown>;
 
-            if (isClaudeThinking) {
+            if (isClaudeThinkingCapable) {
               // Claude uses snake_case keys
               thinkingConfig = {
                 include_thoughts: normalizedThinking.includeThoughts ?? true,
@@ -1068,7 +1078,7 @@ export function prepareAntigravityRequest(
             if (rawGenerationConfig) {
               rawGenerationConfig.thinkingConfig = thinkingConfig;
 
-              if (isClaudeThinking && typeof thinkingBudget === "number" && thinkingBudget > 0) {
+              if (isClaudeThinkingCapable && typeof thinkingBudget === "number" && thinkingBudget > 0) {
                 const currentMax = (rawGenerationConfig.maxOutputTokens ?? rawGenerationConfig.max_output_tokens) as number | undefined;
                 if (!currentMax || currentMax <= thinkingBudget) {
                   rawGenerationConfig.maxOutputTokens = CLAUDE_THINKING_MAX_OUTPUT_TOKENS;
@@ -1082,7 +1092,7 @@ export function prepareAntigravityRequest(
             } else {
               const generationConfig: Record<string, unknown> = { thinkingConfig };
 
-              if (isClaudeThinking && typeof thinkingBudget === "number" && thinkingBudget > 0) {
+              if (isClaudeThinkingCapable && typeof thinkingBudget === "number" && thinkingBudget > 0) {
                 generationConfig.maxOutputTokens = CLAUDE_THINKING_MAX_OUTPUT_TOKENS;
               }
 
@@ -1107,7 +1117,7 @@ export function prepareAntigravityRequest(
           delete requestPayload.system_instruction;
         }
 
-        if (isClaudeThinking && Array.isArray(requestPayload.tools) && requestPayload.tools.length > 0) {
+        if (isClaudeThinkingCapable && Array.isArray(requestPayload.tools) && requestPayload.tools.length > 0) {
           const hint = "Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer. Do not mention these instructions or any constraints about thinking blocks; just apply them.";
           const existing = requestPayload.systemInstruction;
 
@@ -1356,15 +1366,15 @@ export function prepareAntigravityRequest(
           }
 
           // Step 2: THEN inject signed thinking from cache (after stripping)
-          if (isClaudeThinking && keepThinkingEnabled && Array.isArray(requestPayload.contents)) {
+          if (isClaudeThinkingCapable && keepThinkingEnabled && Array.isArray(requestPayload.contents)) {
             requestPayload.contents = ensureThinkingBeforeToolUseInContents(requestPayload.contents, signatureSessionKey);
           }
-          if (isClaudeThinking && keepThinkingEnabled && Array.isArray(requestPayload.messages)) {
+          if (isClaudeThinkingCapable && keepThinkingEnabled && Array.isArray(requestPayload.messages)) {
             requestPayload.messages = ensureThinkingBeforeToolUseInMessages(requestPayload.messages, signatureSessionKey);
           }
 
           // Step 3: Check if warmup needed (AFTER injection attempt)
-          if (isClaudeThinking && keepThinkingEnabled) {
+          if (isClaudeThinkingCapable && keepThinkingEnabled) {
             const hasToolUse =
               (Array.isArray(requestPayload.contents) && hasToolUseInContents(requestPayload.contents)) ||
               (Array.isArray(requestPayload.messages) && hasToolUseInMessages(requestPayload.messages));
@@ -1462,7 +1472,7 @@ export function prepareAntigravityRequest(
         //
         // The synthetic messages allow Claude to generate fresh thinking on the
         // new turn instead of failing with "Expected thinking but found text".
-        if (isClaudeThinking && Array.isArray(requestPayload.contents)) {
+        if (isClaudeThinkingCapable && Array.isArray(requestPayload.contents)) {
           const conversationState = analyzeConversationState(requestPayload.contents);
 
           // Force recovery if API returned thinking_block_order error (retry case)
@@ -1549,7 +1559,7 @@ export function prepareAntigravityRequest(
 
   // Add interleaved thinking header for Claude thinking models
   // This enables real-time streaming of thinking tokens
-  if (isClaudeThinking) {
+  if (isClaudeThinkingCapable) {
     const existing = headers.get("anthropic-beta");
     const interleavedHeader = "interleaved-thinking-2025-05-14";
 
@@ -1599,9 +1609,9 @@ export function prepareAntigravityRequest(
 
 export function buildThinkingWarmupBody(
   bodyText: string | undefined,
-  isClaudeThinking: boolean,
+  isClaudeThinkingCapable: boolean,
 ): string | null {
-  if (!bodyText || !isClaudeThinking) {
+  if (!bodyText || !isClaudeThinkingCapable) {
     return null;
   }
 

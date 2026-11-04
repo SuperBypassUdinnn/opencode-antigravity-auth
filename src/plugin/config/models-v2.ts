@@ -1,6 +1,6 @@
 import { OPENCODE_MODEL_DEFINITIONS, type ModelModalities, type ModelThinkingLevel, type OpencodeModelDefinition } from "./models.ts"
 import type { AvailableModel } from "../quota.ts"
-import { registerAdvertisedModelIds, registerTierSuffixModelBases } from "../transform/model-resolver.ts"
+import { registerAdvertisedModelIds, registerCatalogThinkingModelIds, registerTierSuffixModelBases } from "../transform/model-resolver.ts"
 import { z } from "zod"
 
 export const ModelCatalogCacheSchema = z.object({
@@ -146,6 +146,14 @@ export function buildAccountModelDefinitions(models: Record<string, AvailableMod
   }
 
   registerAdvertisedModelIds(Object.keys(models))
+  // Google's catalog marks thinking-capable models via the displayName, e.g.
+  // "Claude Sonnet 4.6 (Thinking)". Register them so request transforms can
+  // enable thinking for claude ids that carry no -thinking suffix.
+  registerCatalogThinkingModelIds(
+    Object.entries(models)
+      .filter(([, model]) => model.displayName?.toLowerCase().includes("(thinking)"))
+      .map(([id]) => id),
+  )
   registerTierSuffixModelBases(families)
   return definitions
 }
