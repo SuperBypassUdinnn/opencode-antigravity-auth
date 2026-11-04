@@ -2966,12 +2966,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     pushDebug(
                       `no-attemptable-account family=${family} accounts=${accountCount} waitMs=0 threshold=${config.soft_quota_threshold_percent} blockers=${blockers.length}`,
                     );
-                    const shown = blockers.slice(0, 8);
-                    const more = blockers.length > shown.length
-                      ? `\n... and ${blockers.length - shown.length} more blocked account(s).`
-                      : "";
+                    // Show every blocked account: the pool is small and the
+                    // per-account causes are the whole point of this message.
                     const breakdown = blockers.length > 0
-                      ? `${shown.join("\n")}${more}`
+                      ? blockers.join("\n")
                       : "No enabled+eligible account reports a blocker; the pool was filtered by model access.";
                     throw new Error(
                       `No account can serve ${model ?? family}: the pool still reports quota, but no candidate is usable right now.\n` +
