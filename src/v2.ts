@@ -151,8 +151,11 @@ export const AntigravityV2Plugin = Plugin.define({
       const accountCatalogs: Array<{ account: string; models: Record<string, AvailableModel> }> = []
       const eligibleAccounts: Record<string, string[]> = {}
       if (discovery === discoveryGeneration) {
-        invalidateLoader()
-        await transport.flush?.()
+        // Discovery only refreshes the catalog: swap the loader WITHOUT
+        // aborting. In-flight requests keep their signal and finish naturally,
+        // and getLoader retires the old manager right before it builds the
+        // next one, so the retirement happens after those requests complete.
+        invalidateLoader(false)
       }
       const latest = await updateAccounts(latest => {
         for (const result of results) {

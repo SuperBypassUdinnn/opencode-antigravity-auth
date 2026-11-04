@@ -1651,4 +1651,59 @@ describe("OAuth completing during an earlier save", () => {
     await Promise.all([request, disabling])
     expect(state.storage!.accounts[0]).toMatchObject({ enabled: false, refreshToken: "latest-foreground-token" })
   })
+  it("lets an in-flight stream finish when discovery refreshes the catalog", async () => {
+    // The stream request parks on releaseStream and REJECTS if its signal is
+    // aborted, so a discovery-time requestLifetime.abort would fail the test.
+    let releaseStream: (() => void) | undefined
+    let releaseSweep: (() => void) | undefined
+    let sweepStarted = false
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: "fresh", expires_in: 3600 })
+      if (url.endsWith(":loadCodeAssist")) return Response.json({ cloudaicompanionProject: { id: "project" } })
+      if (url.endsWith(":fetchAvailableModels")) {
+        sweepStarted = true
+        await new Promise<void>(resolve => { releaseSweep = resolve })
+        return Response.json({
+          models: { "gemini-3.8-flash-high": { quotaInfo: { remainingFraction: 0.5 } } },
+          agentModelSorts: [{ groups: [{ modelIds: ["gemini-3.8-flash-high"] }] }],
+        })
+      }
+      if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      await new Promise<void>((resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal
+        const onAbort = () => reject(new DOMException("aborted", "AbortError"))
+        signal?.addEventListener("abort", onAbort, { once: true })
+        releaseStream = () => {
+          signal?.removeEventListener("abort", onAbort)
+          resolve()
+        }
+      })
+      return new Response(`data: ${JSON.stringify({ response: {
+        candidates: [{ index: 0, content: { role: "model", parts: [{ text: "Hello from Antigravity" }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 4, totalTokenCount: 7 },
+      } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
+    })
+    const adapter = await host({
+      connection: false,
+      catalog: { "gemini-3.8-flash-high": {} },
+      catalogAccounts: { "antigravity-gemini-3.8-flash-high": [accountID(state.storage!.accounts[0]!)] },
+    })
+    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
+    const pending = stream(sdk, "antigravity-gemini-3.8-flash-high")
+    await vi.waitFor(() => expect(releaseStream).toBeDefined())
+
+    // Run a forced discovery sweep while the stream is parked in flight.
+    const context = { signal: new AbortController().signal, error: () => { throw new Error("Unexpected RPC error") } }
+    const modelsPromise = adapter.accountHandlers!.models({}, context)
+    await vi.waitFor(() => expect(sweepStarted).toBe(true))
+    await vi.waitFor(() => expect(releaseSweep).toBeDefined())
+    releaseSweep!()
+    await modelsPromise
+
+    // The catalog refresh must not have aborted the parked request.
+    releaseStream!()
+    const parts = await pending
+    expect(parts.some(part => part.type === "text-delta")).toBe(true)
+  })
 })
