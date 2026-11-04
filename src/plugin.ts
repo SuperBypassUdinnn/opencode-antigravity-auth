@@ -1943,6 +1943,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 preferredHeaderStyle,
                 strictWait,
                 eligible,
+                config.soft_quota_threshold_percent,
+                softQuotaCacheTtlMs,
               ) || 60_000;
               const waitSecValue = Math.max(1, Math.ceil(waitMs / 1000));
 
@@ -2958,6 +2960,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     preferredHeaderStyle,
                     !allowQuotaFallback,
                     eligible,
+                    config.soft_quota_threshold_percent,
+                    softQuotaCacheTtlMs,
                   );
                   selectionGuard.recordAttempt();
                   if (waitMs <= 0) {

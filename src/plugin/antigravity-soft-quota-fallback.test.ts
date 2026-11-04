@@ -126,3 +126,88 @@ describe("getMinWaitTimeForFamily with a soft-quota-blocked pool", () => {
     expect(waitMs).toBeLessThanOrEqual(3_600_000);
   });
 });
+
+/**
+ * The wait query must see every blocker the selection path sees. Cooldowns,
+ * base-key rate-limit marks, and the soft quota cache previously stayed
+ * invisible, so the guard computed 0 ms, read that as "no usable candidate",
+ * and aborted requests that a short wait would have served.
+ */
+describe("getMinWaitTimeForFamily sees every transient blocker", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("counts a cooling-down account as blocked instead of reporting 0", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    for (const account of accounts) {
+      manager.markAccountCoolingDown(account!, 30_000, "network-error");
+    }
+
+    const waitMs = manager.getMinWaitTimeForFamily("gemini", null, "antigravity", false);
+
+    expect(waitMs).toBeGreaterThan(0);
+    expect(waitMs).toBeLessThanOrEqual(30_000);
+  });
+
+  it("sees base-key rate-limit marks that the model-key scan missed", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    // markRateLimited without a model writes the BASE antigravity key, which
+    // the old strict wait query never read while the skip logic honored it.
+    manager.markRateLimited(accounts[0]!, 30_000, "gemini", "antigravity");
+    manager.markRateLimited(accounts[1]!, 30_000, "gemini", "antigravity");
+
+    const waitMs = manager.getMinWaitTimeForFamily("gemini", "gemini-3-pro", "antigravity", true);
+
+    expect(waitMs).toBeGreaterThan(0);
+    expect(waitMs).toBeLessThanOrEqual(30_000);
+  });
+
+  it("waits for the soft quota reset instead of reporting 0", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    const resetTime = new Date(Date.now() + 5 * 60_000).toISOString();
+    for (const account of accounts) {
+      manager.updateQuotaCache(account!.index, {
+        "gemini-pro": { remainingFraction: 0.01, modelCount: 1, resetTime },
+      });
+    }
+
+    const waitMs = manager.getMinWaitTimeForFamily(
+      "gemini",
+      "gemini-3-pro",
+      "antigravity",
+      false,
+      () => true,
+      90,
+      30 * 60_000,
+    );
+
+    expect(waitMs).toBeGreaterThan(4 * 60_000);
+    expect(waitMs).toBeLessThanOrEqual(5 * 60_000);
+  });
+
+  it("reports a bounded wait when a soft-quota-blocked account has no reset time", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    for (const account of accounts) {
+      manager.updateQuotaCache(account!.index, {
+        "gemini-pro": { remainingFraction: 0.01, modelCount: 1 },
+      });
+    }
+
+    const waitMs = manager.getMinWaitTimeForFamily(
+      "gemini",
+      "gemini-3-pro",
+      "antigravity",
+      false,
+      () => true,
+      90,
+      30 * 60_000,
+    );
+
+    expect(waitMs).toBe(60_000);
+  });
+});

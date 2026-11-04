@@ -221,6 +221,11 @@ function clampNonNegativeInt(value: unknown, fallback: number): number {
   return value < 0 ? 0 : Math.floor(value);
 }
 
+/** Bounded wait reported for an account that is soft-quota blocked but whose
+ * cached group carries no parseable reset time. Keeps the selection guard in
+ * wait-and-retry mode instead of failing fast on an underivable wait. */
+const SOFT_QUOTA_UNKNOWN_WAIT_MS = 60_000;
+
 function getQuotaKey(family: ModelFamily, headerStyle: HeaderStyle, model?: string | null): QuotaKey {
   if (family === "claude") {
     return "claude";
@@ -1033,41 +1038,74 @@ export class AccountManager {
     headerStyle?: HeaderStyle,
     strict?: boolean,
     eligible: (account: ManagedAccount) => boolean = () => true,
+    softQuotaThresholdPercent: number = 100,
+    softQuotaCacheTtlMs: number = 10 * 60 * 1000,
   ): number {
+    // Mirror the full skip predicate used by account selection: an account is
+    // only available when it is not rate-limited, not cooling down, and not
+    // over the soft quota threshold. The previous version only looked at rate
+    // limits, so a pool blocked by cooldowns or the soft quota guard was
+    // reported as "available in 0 ms" and callers treated that as fatal.
     const available = this.accounts.filter((a) => {
       clearExpiredRateLimits(a);
-      return a.enabled !== false && eligible(a) && (strict && headerStyle
-        ? !isRateLimitedForHeaderStyle(a, family, headerStyle, model)
-        : !isRateLimitedForFamily(a, family, model));
+      if (a.enabled === false || !eligible(a)) return false;
+      const rateLimited = strict && headerStyle
+        ? isRateLimitedForHeaderStyle(a, family, headerStyle, model)
+        : isRateLimitedForFamily(a, family, model);
+      if (rateLimited) return false;
+      if (this.isAccountCoolingDown(a)) return false;
+      if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) return false;
+      return true;
     });
     if (available.length > 0) {
       return 0;
     }
 
+    // No account is servable right now: estimate when the FIRST one frees up.
+    // An account sits behind ALL of its active blockers at once, so its wait is
+    // the longest pending blocker; the pool waits for the shortest account.
+    const msUntil = (resetTime?: number): number =>
+      resetTime === undefined ? 0 : Math.max(0, resetTime - nowMs());
+    // Blocked while EITHER the model key or the base key is pending, mirroring
+    // isRateLimitedForHeaderStyle.
+    const poolBlockedForMs = (a: ManagedAccount, style: HeaderStyle): number =>
+      Math.max(
+        msUntil(a.rateLimitResetTimes[getQuotaKey(family, style, model)]),
+        msUntil(a.rateLimitResetTimes[getQuotaKey(family, style)]),
+      );
+
+    const now = nowMs();
     const waitTimes: number[] = [];
     for (const a of this.accounts) {
       if (a.enabled === false || !eligible(a)) continue;
+      const blockers: number[] = [];
       if (family === "claude") {
-        const t = a.rateLimitResetTimes.claude;
-        if (t !== undefined) waitTimes.push(Math.max(0, t - nowMs()));
+        blockers.push(msUntil(a.rateLimitResetTimes.claude));
       } else if (strict && headerStyle) {
-        const key = getQuotaKey(family, headerStyle, model);
-        const t = a.rateLimitResetTimes[key];
-        if (t !== undefined) waitTimes.push(Math.max(0, t - nowMs()));
+        blockers.push(poolBlockedForMs(a, headerStyle));
       } else {
         // For Gemini, account becomes available when EITHER pool expires for this model/family
-        const antigravityKey = getQuotaKey(family, "antigravity", model);
-        const cliKey = getQuotaKey(family, "gemini-cli", model);
-
-        const t1 = a.rateLimitResetTimes[antigravityKey];
-        const t2 = a.rateLimitResetTimes[cliKey];
-        
-        const accountWait = Math.min(
-          t1 !== undefined ? Math.max(0, t1 - nowMs()) : Infinity,
-          t2 !== undefined ? Math.max(0, t2 - nowMs()) : Infinity
-        );
-        if (accountWait !== Infinity) waitTimes.push(accountWait);
+        blockers.push(Math.min(poolBlockedForMs(a, "antigravity"), poolBlockedForMs(a, "gemini-cli")));
       }
+      if (a.coolingDownUntil !== undefined && a.coolingDownUntil > now) {
+        blockers.push(a.coolingDownUntil - now);
+      }
+      if (
+        softQuotaThresholdPercent < 100 &&
+        isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)
+      ) {
+        const groupData = a.cachedQuota?.[resolveQuotaGroup(family, model)];
+        const resetTimestamp = groupData?.resetTime ? Date.parse(groupData.resetTime) : NaN;
+        if (Number.isFinite(resetTimestamp) && resetTimestamp > now) {
+          blockers.push(resetTimestamp - now);
+        } else {
+          // Over threshold with no usable reset time: no derivable wait, but the
+          // account is still blocked. Report a bounded wait so callers wait and
+          // retry instead of declaring the whole pool unusable.
+          blockers.push(SOFT_QUOTA_UNKNOWN_WAIT_MS);
+        }
+      }
+      if (blockers.length > 0) waitTimes.push(Math.max(...blockers));
     }
 
     return waitTimes.length > 0 ? Math.min(...waitTimes) : 0;
