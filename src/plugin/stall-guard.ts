@@ -8,10 +8,15 @@
  * "server restarted while you were working" restart loop. This module wraps
  * the loader fetch with two deadlines:
  *
- * The deadlines stay below the 45s event-stream idle watchdog the TUI client
- * runs against its server, so a stall surfaces as a plugin-level abort and
- * retry (which keeps events flowing) instead of the client declaring the
- * stream dead and replacing the server process.
+ * The body deadline intentionally exceeds the TUI client's 45s event-stream
+ * idle watchdog: that watchdog is fed by heartbeat traffic from the server
+ * itself, so model silence does not trip it (verified 2026-11-06: four
+ * consecutive stalled attempts with 43-51s silent gaps did not restart the
+ * TUI server). The binding constraint for body silence is opencode's
+ * transport chunkTimeout (default 300s), which the body deadline stays well
+ * below while still bounding a genuinely dead upstream. The headers deadline
+ * stays short: a missing headers response is a connection-level failure
+ * where failover is cheap.
  *
  * - headers: the fetch call itself must settle within `headersTimeoutMs`
  *   (default 30s, env OPENCODE_ANTIGRAVITY_STALL_HEADERS_MS).
@@ -26,7 +31,7 @@
  */
 
 const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
-const DEFAULT_BODY_IDLE_TIMEOUT_MS = 25_000;
+const DEFAULT_BODY_IDLE_TIMEOUT_MS = 180_000;
 
 export type StalledPhase = "headers" | "body";
 

@@ -38,7 +38,7 @@ import {
   createSyntheticErrorResponse,
 } from "./plugin/request-helpers";
 import { EmptyResponseError } from "./plugin/errors";
-import { fetchWithStallGuard, isStalledError } from "./plugin/stall-guard";
+import { fetchWithStallGuard, isStalledError, stallBodyIdleMs } from "./plugin/stall-guard";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
@@ -2271,6 +2271,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Track network error retries separately
             let networkRetryCount = 0;
             let lastNetworkErrorEndpoint = -1;
+            // Body-phase stalls get their own small budget: each attempt idles
+            // for the full stall window before failing, and the dominant cause
+            // (buffered thinking or long prefill) is a request property that
+            // endpoint/account failover cannot fix. Two attempts bound the
+            // worst case while still allowing one fresh-connection retry.
+            let bodyStallCount = 0;
+            const MAX_BODY_STALL_ATTEMPTS = 2;
             // Global retry counter to prevent infinite loops across all accounts/endpoints
             let globalRetryCount = 0;
             const MAX_GLOBAL_RETRIES = 10;
@@ -2851,6 +2858,39 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     status: 400,
                     headers: { "Content-Type": "application/json" }
                   });
+                }
+
+                // Handle body-phase stalls with a dedicated, tightly bounded
+                // path before the generic network-error handling: each stalled
+                // attempt costs the full idle window, and repeated silence on
+                // different accounts points at the request itself (buffered
+                // thinking or long prefill), not at a broken connection.
+                if (isStalledError(error) && error.phase === "body") {
+                  checkAborted(); // Respect user cancellation before retrying
+
+                  bodyStallCount += 1;
+                  if (bodyStallCount >= MAX_BODY_STALL_ATTEMPTS) {
+                    pushDebug(
+                      `body-stall: giving up after ${bodyStallCount} attempts without stream data (idle ${Math.round(stallBodyIdleMs() / 1000)}s each)`,
+                    );
+                    return new Response(JSON.stringify({
+                      type: "error",
+                      error: {
+                        type: "unrecoverable_error",
+                        message:
+                          `Antigravity stream stalled ${bodyStallCount} times without sending any data (no SSE event within ${Math.round(stallBodyIdleMs() / 1000)}s per attempt). This usually means the request's thinking or prefill phase outlasts the stall guard: lower the model's thinking budget, shorten the prompt (/compact), or raise OPENCODE_ANTIGRAVITY_STALL_IDLE_MS.`,
+                      },
+                    }), {
+                      status: 400,
+                      headers: { "Content-Type": "application/json" },
+                    });
+                  }
+
+                  pushDebug(
+                    `body-stall: retrying same endpoint (${bodyStallCount}/${MAX_BODY_STALL_ATTEMPTS}) for a fresh connection`,
+                  );
+                  i -= 1; // Retry same endpoint (i++ in loop will bring it back)
+                  continue;
                 }
 
                 // Handle network errors with exponential backoff (like capacity errors)
