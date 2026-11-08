@@ -87,6 +87,39 @@ function catalogSignature(definitions: Record<string, unknown>): string {
   return Object.keys(definitions).sort().join("\n")
 }
 
+const DISPOSED_MESSAGE = "Antigravity plugin has been disposed"
+/**
+ * A host reload disposes this setup and installs a new one, but a session keeps
+ * the SDK object the previous setup built, so its `fetch` closure outlives the
+ * disposal. Each setup publishes its request path here so a disposed setup can
+ * hand a late request to the newest one instead of failing the turn.
+ *
+ * The registry lives on `globalThis` because a reload re-imports the module:
+ * module scope would give the old closure a different map than the new setup.
+ */
+type ActiveDispatch = (input: RequestInfo | URL, init: RequestInit | undefined, fallback: unknown, hops: number) => Promise<Response>
+const ACTIVE_DISPATCH = Symbol.for("opencode-antigravity-auth.v2.dispatch")
+const RELOAD_HANDOVER_MS = 750
+const RELOAD_HANDOVER_POLL_MS = 25
+function activeDispatches(): Map<string, ActiveDispatch> {
+  const holder = globalThis as typeof globalThis & { [ACTIVE_DISPATCH]?: Map<string, ActiveDispatch> }
+  return holder[ACTIVE_DISPATCH] ??= new Map<string, ActiveDispatch>()
+}
+/**
+ * Waits briefly for the replacement setup: the host disposes every plugin and
+ * then loads them again, so a request can arrive inside that window.
+ */
+async function dispatchThroughActive(directory: string, input: RequestInfo | URL, init: RequestInit | undefined, fallback: unknown, hops = 0): Promise<Response> {
+  if (hops > 4) throw new Error(DISPOSED_MESSAGE)
+  const deadline = hops === 0 ? Date.now() + RELOAD_HANDOVER_MS : 0
+  while (true) {
+    const active = activeDispatches().get(directory)
+    if (active) return active(input, init, fallback, hops + 1)
+    if (Date.now() >= deadline) throw new Error(DISPOSED_MESSAGE)
+    await new Promise(resolve => setTimeout(resolve, RELOAD_HANDOVER_POLL_MS))
+  }
+}
+
 /** OpenCode 2.1's source transforms and AI SDK 3 transport adapter. */
 export const AntigravityV2Plugin = Plugin.define({
   id: "opencode-antigravity-auth",
@@ -222,7 +255,7 @@ export const AntigravityV2Plugin = Plugin.define({
      */
     const refreshModels = (options: { force?: boolean } = {}): Promise<number> => {
       const run = async (): Promise<number> => {
-        if (disposed) throw new Error("Antigravity plugin has been disposed")
+        if (disposed) throw new Error(DISPOSED_MESSAGE)
         if (!options.force && await discoveryRecentlyStarted()) return Object.keys(modelDefinitions).length
         const lease = discoveryGate.tryStart()
         if (!lease) {
@@ -249,7 +282,7 @@ export const AntigravityV2Plugin = Plugin.define({
     let disposed = false
     const credentialOperations = new Set<Promise<unknown>>()
     const runCredentialOperation = <T>(operation: () => Promise<T>): Promise<T> => {
-      if (disposed) return Promise.reject(new Error("Antigravity plugin has been disposed"))
+      if (disposed) return Promise.reject(new Error(DISPOSED_MESSAGE))
       const running = operation()
       credentialOperations.add(running)
       void running.then(() => credentialOperations.delete(running), () => credentialOperations.delete(running))
@@ -382,7 +415,7 @@ export const AntigravityV2Plugin = Plugin.define({
     }
 
     const getLoader = async (): Promise<LoaderResult> => {
-      if (disposed) throw new Error("Antigravity plugin has been disposed")
+      if (disposed) throw new Error(DISPOSED_MESSAGE)
       const resolved = await resolveAuth()
       if (!resolved) throw new Error("Connect Google with Antigravity OAuth to use this model")
       const { auth, identity } = resolved
@@ -429,7 +462,7 @@ export const AntigravityV2Plugin = Plugin.define({
           throw error
         }
         if (typeof result.fetch !== "function") throw new Error("Antigravity OAuth is unavailable")
-        if (disposed) throw new Error("Antigravity plugin has been disposed")
+        if (disposed) throw new Error(DISPOSED_MESSAGE)
         if (generation !== expectedGeneration) return undefined
         loader = result as LoaderResult
         loaderIdentity = identity
@@ -440,26 +473,40 @@ export const AntigravityV2Plugin = Plugin.define({
       return result ?? getLoader()
     }
 
-    const scopedFetch = (fallback: unknown, body?: Model.Info["body"]): Fetch => (input, init) => runCredentialOperation(async () => {
-      if (disposed) throw new Error("Antigravity plugin has been disposed")
-      const original: Fetch = typeof fallback === "function" ? fallback as Fetch : globalThis.fetch
-      if (!await currentAuth()) throw new Error("Connect Google with Antigravity OAuth and enable an account to use this model")
+    /** One intercepted request against this setup's loader; reusable by a replacement setup. */
+    const dispatch: ActiveDispatch = async (input, init, fallback, hops) => {
+      if (disposed) return dispatchThroughActive(ctx.location.directory, input, init, fallback, hops)
+      return runCredentialOperation(async () => {
+        const original: Fetch = typeof fallback === "function" ? fallback as Fetch : globalThis.fetch
+        if (!await currentAuth()) throw new Error("Connect Google with Antigravity OAuth and enable an account to use this model")
+        const interceptor = await getLoader()
+        const signal = AbortSignal.any([
+          lifetime.signal,
+          requestLifetime.signal,
+          ...(init?.signal ? [init.signal] : input instanceof Request ? [input.signal] : []),
+        ])
+        return outbound.run(original, () => interceptor.fetch(input instanceof URL ? input.toString() : input, { ...init, signal }))
+      })
+    }
+    activeDispatches().set(ctx.location.directory, dispatch)
+
+    const scopedFetch = (fallback: unknown, body?: Model.Info["body"]): Fetch => (input, init) => {
+      // The overlay only reads the caller's body, so a disposed setup can apply
+      // it and hand the finished request to its replacement.
       if (body && typeof init?.body === "string") {
         init = { ...init, body: JSON.stringify(mergeBody(JSON.parse(init.body) as Record<string, unknown>, body)) }
       }
-      const interceptor = await getLoader()
-      const signal = AbortSignal.any([
-        lifetime.signal,
-        requestLifetime.signal,
-        ...(init?.signal ? [init.signal] : input instanceof Request ? [input.signal] : []),
-      ])
-      return outbound.run(original, () => interceptor.fetch(input instanceof URL ? input.toString() : input, { ...init, signal }))
-    })
+      if (disposed) return dispatchThroughActive(ctx.location.directory, input, init, fallback)
+      return dispatch(input, init, fallback, 0)
+    }
 
     let cleaning: Promise<void> | undefined
     const cleanup = () => {
       if (cleaning) return cleaning
       disposed = true
+      // Synchronous so the handover target disappears with this setup rather
+      // than forwarding back into it.
+      if (activeDispatches().get(ctx.location.directory) === dispatch) activeDispatches().delete(ctx.location.directory)
       cleaning = Promise.resolve().then(async () => {
         lifetime.abort(new Error("Antigravity plugin disposed"))
         await Promise.allSettled([...listeners].map((listener) => listener.close()))
@@ -490,7 +537,7 @@ export const AntigravityV2Plugin = Plugin.define({
           async authorize(answer) {
             return runCredentialOperation(async () => {
               const auth = await authorizeAntigravity(typeof answer.projectId === "string" ? answer.projectId : "")
-              if (disposed) throw new Error("Antigravity plugin has been disposed")
+              if (disposed) throw new Error(DISPOSED_MESSAGE)
               const state = new URL(auth.url).searchParams.get("state")
               if (!state) throw new Error("Antigravity authorization did not provide OAuth state")
               const complete = (input: string) => runCredentialOperation(async () => {
@@ -535,7 +582,7 @@ export const AntigravityV2Plugin = Plugin.define({
               void callback.catch(() => undefined)
               if (disposed) {
                 await listener.close()
-                throw new Error("Antigravity plugin has been disposed")
+                throw new Error(DISPOSED_MESSAGE)
               }
               return { url: auth.url, instructions: "Open this URL in your browser to connect Antigravity.", mode: "auto", callback }
             })

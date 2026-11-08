@@ -628,6 +628,28 @@ describe("OpenCode V2 adapter", () => {
     expect(state.updater).not.toHaveBeenCalled()
   })
 
+  it("hands a disposed setup's SDK to the setup that replaces it", async () => {
+    mockNetwork()
+    const first = await host()
+    const { sdk } = await first.sdk()
+    await first.cleanup()
+    await host()
+    const parts = await stream(sdk)
+    expect(parts).toContainEqual(expect.objectContaining({ type: "text-delta", delta: "Hello from Antigravity" }))
+  })
+
+  it("builds the replacement setup's loader for a late request", async () => {
+    mockNetwork()
+    const first = await host()
+    const { sdk } = await first.sdk()
+    await stream(sdk)
+    expect(state.queueStart).toHaveBeenCalledTimes(1)
+    await first.cleanup()
+    await host()
+    await stream(sdk)
+    expect(state.queueStart).toHaveBeenCalledTimes(2)
+  })
+
   it("retains cancellation through the prepared wrapper and aborts in-flight requests on cleanup", async () => {
     const adapter = await host()
     const { sdk } = await adapter.sdk()
