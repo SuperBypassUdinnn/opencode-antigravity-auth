@@ -1762,6 +1762,12 @@ export const createAntigravityPlugin = (providerId: string) => async (
           let quotaExhausted: QuotaExhaustion | null = null;
           // Provider wording from the last non-quota 403, if any.
           let forbiddenDetail: string | undefined;
+          // Non-quota permission 403s (e.g. a missing product license) are
+          // account-independent: Google rejects the product, not the account.
+          // Once several distinct accounts return the same kind of rejection,
+          // rotating further only burns time.
+          const forbiddenAccounts = new Set<number>();
+          const MAX_FORBIDDEN_ACCOUNTS = 3;
           const abortSignal = init?.signal ?? undefined;
 
           const forbiddenError = (accountCount: number): Error | undefined => {
@@ -2685,6 +2691,20 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   // Any other 403 keeps its provider wording so the session does
                   // not receive a bare status text if every endpoint fails.
                   forbiddenDetail = bodyInfo.message ?? extracted.message ?? forbiddenDetail;
+
+                  if (forbiddenDetail) {
+                    forbiddenAccounts.add(account.index);
+                  }
+                  if (forbiddenAccounts.size >= MAX_FORBIDDEN_ACCOUNTS) {
+                    checkAborted(); // Respect user cancellation before giving up
+                    pushDebug(
+                      `forbidden-403: giving up after ${forbiddenAccounts.size} distinct accounts (detail: ${forbiddenDetail})`,
+                    );
+                    return createSyntheticErrorResponse(
+                      `Google rejected this request with 403 PERMISSION_DENIED: ${forbiddenDetail} The rejection repeated across ${forbiddenAccounts.size} distinct accounts, so account rotation cannot fix it.`,
+                      prepared.requestedModel,
+                    );
+                  }
                 }
 
                 const shouldRetryEndpoint = (
