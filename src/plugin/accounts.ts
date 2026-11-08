@@ -284,6 +284,37 @@ function clearExpiredRateLimits(account: ManagedAccount): void {
   }
 }
 
+/** True when a quota group reports quota left, either on the group aggregate
+ * or on at least one of its per-model entries. */
+function groupHasAvailableQuota(groupData: QuotaGroupSummary | undefined): boolean {
+  if (!groupData) return false;
+  if ((groupData.remainingFraction ?? 0) > 0) return true;
+  return Object.values(groupData.models ?? {}).some((entry) => (entry.remainingFraction ?? 0) > 0);
+}
+
+/** True when the requested model still has quota in its group. A model that
+ * is missing from the per-model map falls back to the group aggregate, which
+ * is the minimum across models, so an unreported model is not assumed free. */
+function modelHasAvailableQuota(groupData: QuotaGroupSummary | undefined, model: string): boolean {
+  if (!groupData) return false;
+  const entry = perModelQuotaEntry(groupData, model);
+  if (entry?.remainingFraction != null) return entry.remainingFraction > 0;
+  return (groupData.remainingFraction ?? 0) > 0;
+}
+
+/** Family a persisted rate-limit key belongs to, or null when unrecognized. */
+function familyForQuotaKey(key: QuotaKey): ModelFamily | null {
+  if (key === "claude") return "claude";
+  if (key.startsWith("gemini-antigravity") || key.startsWith("gemini-cli")) return "gemini";
+  return null;
+}
+
+/** Model part of a per-model rate-limit key, or null for a base family key. */
+function modelForQuotaKey(key: QuotaKey): string | null {
+  const separator = key.indexOf(":");
+  return separator === -1 ? null : key.slice(separator + 1);
+}
+
 /**
  * Resolve the quota group for soft quota checks.
  * 
@@ -493,6 +524,17 @@ export class AccountManager {
         }
       }
 
+      // Rate-limit markers persisted by an earlier session can outlive the
+      // quota window they recorded. Reconciling them against the cached quota
+      // at load time keeps a stale marker from blocking the pool for days,
+      // because quota refreshes are only triggered by successful requests.
+      let rateLimitsReconciled = false;
+      for (const acc of this.accounts) {
+        if (acc.cachedQuota && this.reconcileRateLimitsWithQuota(acc, acc.cachedQuota)) {
+          rateLimitsReconciled = true;
+        }
+      }
+
       this.cursor = clampNonNegativeInt(stored.activeIndex, 0);
       if (this.accounts.length > 0) {
         this.cursor = this.cursor % this.accounts.length;
@@ -507,8 +549,8 @@ export class AccountManager {
         ) % this.accounts.length;
       }
 
-      // Persist updated fingerprint versions to disk
-      if (fingerprintVersionChanged && !managedStorage) {
+      // Persist updated fingerprint versions and reconciled rate limits to disk
+      if ((fingerprintVersionChanged || rateLimitsReconciled) && !managedStorage) {
         this.requestSaveToDisk();
       }
 
@@ -1571,7 +1613,55 @@ export class AccountManager {
     if (account) {
       account.cachedQuota = quotaGroups;
       account.cachedQuotaUpdatedAt = nowMs();
+      if (this.reconcileRateLimitsWithQuota(account, quotaGroups)) {
+        this.requestSaveToDisk();
+      }
     }
+  }
+
+  /**
+   * Drop rate-limit markers that fresh quota data contradicts.
+   *
+   * A marker records the earliest moment an account may be tried again, and a
+   * quota 429 can carry a reset days away. When the backend later reports
+   * remaining quota for the same group, the marker is stale state: keeping it
+   * blocks an account that is actually usable until the old reset expires.
+   *
+   * Only keys the quota data can vouch for are removed. A model whose group is
+   * exhausted, or that the response does not mention, keeps its marker.
+   *
+   * @returns true when at least one marker was removed
+   */
+  private reconcileRateLimitsWithQuota(
+    account: ManagedAccount,
+    quotaGroups: Partial<Record<QuotaGroup, QuotaGroupSummary>>,
+  ): boolean {
+    const claudeAvailable = groupHasAvailableQuota(quotaGroups.claude);
+    const geminiAvailable =
+      groupHasAvailableQuota(quotaGroups["gemini-pro"]) ||
+      groupHasAvailableQuota(quotaGroups["gemini-flash"]);
+    if (!claudeAvailable && !geminiAvailable) {
+      return false;
+    }
+
+    let changed = false;
+    for (const key of Object.keys(account.rateLimitResetTimes) as QuotaKey[]) {
+      const family = familyForQuotaKey(key);
+      if (!family) continue;
+      if (family === "claude" ? !claudeAvailable : !geminiAvailable) continue;
+
+      const model = modelForQuotaKey(key);
+      if (model) {
+        const quotaGroup = getModelFamily(model);
+        if (quotaGroup === "claude" ? !claudeAvailable : !modelHasAvailableQuota(quotaGroups[quotaGroup], model)) {
+          continue;
+        }
+      }
+
+      delete account.rateLimitResetTimes[key];
+      changed = true;
+    }
+    return changed;
   }
 
   isAccountOverSoftQuota(account: ManagedAccount, family: ModelFamily, thresholdPercent: number, cacheTtlMs: number, model?: string | null): boolean {

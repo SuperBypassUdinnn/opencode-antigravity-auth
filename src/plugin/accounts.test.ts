@@ -1829,6 +1829,170 @@ describe("AccountManager", () => {
     });
   });
 
+  describe("rate limit reconciliation with quota cache", () => {
+    it("clears stale Gemini markers when the reported group has quota", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1",
+            addedAt: 1,
+            lastUsed: 0,
+            rateLimitResetTimes: {
+              "gemini-antigravity": 10_000_000,
+              "gemini-antigravity:gemini-3.8-flash-high": 10_000_000,
+              "gemini-cli": 10_000_000,
+            },
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, {
+        "gemini-flash": {
+          remainingFraction: 1,
+          modelCount: 1,
+          models: { "gemini-3.8-flash-high": { remainingFraction: 1 } },
+        },
+      });
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
+    });
+
+    it("keeps markers when the reported group is exhausted", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1",
+            addedAt: 1,
+            lastUsed: 0,
+            rateLimitResetTimes: {
+              "gemini-antigravity": 10_000_000,
+              "gemini-antigravity:gemini-3.8-pro-high": 10_000_000,
+            },
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, {
+        "gemini-pro": { remainingFraction: 0, modelCount: 1 },
+      });
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({
+        "gemini-antigravity": 10_000_000,
+        "gemini-antigravity:gemini-3.8-pro-high": 10_000_000,
+      });
+    });
+
+    it("clears the family marker but keeps an exhausted model marker", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1",
+            addedAt: 1,
+            lastUsed: 0,
+            rateLimitResetTimes: {
+              "gemini-antigravity": 10_000_000,
+              "gemini-antigravity:gemini-3.8-pro-high": 10_000_000,
+            },
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, {
+        "gemini-pro": { remainingFraction: 0, modelCount: 1 },
+        "gemini-flash": { remainingFraction: 1, modelCount: 1 },
+      });
+
+      const account = manager.getAccounts()[0]!;
+      expect(account.rateLimitResetTimes["gemini-antigravity"]).toBeUndefined();
+      expect(account.rateLimitResetTimes["gemini-antigravity:gemini-3.8-pro-high"]).toBe(10_000_000);
+    });
+
+    it("clears the Claude marker when Claude quota is available", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          { refreshToken: "r1", projectId: "p1", addedAt: 1, lastUsed: 0, rateLimitResetTimes: { claude: 10_000_000 } },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, { claude: { remainingFraction: 0.4, modelCount: 1 } });
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes.claude).toBeUndefined();
+    });
+
+    it("keeps the Claude marker while Claude quota is exhausted", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          { refreshToken: "r1", projectId: "p1", addedAt: 1, lastUsed: 0, rateLimitResetTimes: { claude: 10_000_000 } },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, { claude: { remainingFraction: 0, modelCount: 1 } });
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes.claude).toBe(10_000_000);
+    });
+
+    it("leaves families missing from the quota response untouched", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          { refreshToken: "r1", projectId: "p1", addedAt: 1, lastUsed: 0, rateLimitResetTimes: { claude: 10_000_000 } },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, { "gemini-flash": { remainingFraction: 1, modelCount: 1 } });
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes.claude).toBe(10_000_000);
+    });
+
+    it("reconciles persisted markers against cached quota at load time", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1",
+            addedAt: 1,
+            lastUsed: 0,
+            rateLimitResetTimes: { "gemini-antigravity:gemini-3.8-flash-high": 10_000_000 },
+            cachedQuota: {
+              "gemini-flash": {
+                remainingFraction: 1,
+                modelCount: 1,
+                models: { "gemini-3.8-flash-high": { remainingFraction: 1 } },
+              },
+            },
+            cachedQuotaUpdatedAt: Date.now(),
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
+    });
+  });
+
   describe("getMinWaitTimeForSoftQuota", () => {
     it("returns 0 when accounts are available (under threshold)", () => {
       const stored: AccountStorageV4 = {
