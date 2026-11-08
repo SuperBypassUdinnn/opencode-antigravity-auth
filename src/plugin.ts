@@ -36,6 +36,7 @@ import { resolveModelWithTier } from "./plugin/transform/model-resolver";
 import {
   isEmptyResponseBody,
   createSyntheticErrorResponse,
+  createSyntheticGeminiErrorResponse,
 } from "./plugin/request-helpers";
 import { EmptyResponseError } from "./plugin/errors";
 import { fetchWithStallGuard, isStalledError, stallBodyIdleMs } from "./plugin/stall-guard";
@@ -2708,10 +2709,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     pushDebug(
                       `forbidden-403: giving up (${forbiddenAccounts.size} distinct accounts, ${forbiddenAttempts} attempts; detail: ${forbiddenDetail})`,
                     );
-                    return createSyntheticErrorResponse(
-                      `Google rejected this request with 403 PERMISSION_DENIED: ${forbiddenDetail} The rejection repeated across ${forbiddenAccounts.size} distinct account(s) / ${forbiddenAttempts} attempts, so retrying cannot fix it.`,
-                      prepared.requestedModel,
-                    );
+                    const forbiddenMessage = `Google rejected this request with 403 PERMISSION_DENIED: ${forbiddenDetail} The rejection repeated across ${forbiddenAccounts.size} distinct account(s) / ${forbiddenAttempts} attempts, so retrying cannot fix it.`;
+                    // A Gemini request needs Gemini-shaped SSE; an Anthropic
+                    // stream leaves the adapter without a finish reason and the
+                    // session retries instead of showing this text.
+                    const syntheticError =
+                      family === "gemini" ? createSyntheticGeminiErrorResponse : createSyntheticErrorResponse;
+                    return syntheticError(forbiddenMessage, prepared.requestedModel);
                   }
                 }
 
@@ -2764,7 +2768,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                         "warning"
                       );
                       const errorMessage = `[Antigravity Error] Context is too long for this model.\n\nPlease use /compact to reduce context size, then retry your request.\n\nAlternatively, you can:\n- Use /clear to start fresh\n- Use /undo to remove recent messages\n- Switch to a model with larger context window`;
-                      return createSyntheticErrorResponse(errorMessage, prepared.requestedModel);
+                      const syntheticError =
+                        family === "gemini" ? createSyntheticGeminiErrorResponse : createSyntheticErrorResponse;
+                      return syntheticError(errorMessage, prepared.requestedModel);
                     }
                   }
                 }

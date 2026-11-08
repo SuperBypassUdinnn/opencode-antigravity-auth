@@ -2872,3 +2872,51 @@ data: ${JSON.stringify({ type: "message_stop" })}
     },
   });
 }
+
+/**
+ * Builds a Gemini-format SSE response carrying an error message.
+ *
+ * `createSyntheticErrorResponse` speaks the Anthropic event protocol, which a
+ * Gemini request cannot parse: the adapter sees a stream that ends without a
+ * finish reason, the session reports "unknown finish reason", and it retries the
+ * whole request instead of showing the message. Gemini requests need the same
+ * text in the Gemini chunk format, terminated with a finish reason.
+ */
+export function createSyntheticGeminiErrorResponse(
+  errorMessage: string,
+  requestedModel: string = "unknown",
+): Response {
+  const textChunk = {
+    candidates: [
+      {
+        content: { role: "model", parts: [{ text: errorMessage }] },
+        index: 0,
+      },
+    ],
+    modelVersion: requestedModel,
+  };
+  const finishChunk = {
+    candidates: [
+      {
+        content: { role: "model", parts: [] },
+        finishReason: "STOP",
+        index: 0,
+      },
+    ],
+    usageMetadata: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 },
+    modelVersion: requestedModel,
+  };
+
+  const body = `data: ${JSON.stringify(textChunk)}\n\ndata: ${JSON.stringify(finishChunk)}\n\n`;
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Antigravity-Synthetic": "true",
+      "X-Antigravity-Error-Type": "synthetic_error",
+    },
+  });
+}

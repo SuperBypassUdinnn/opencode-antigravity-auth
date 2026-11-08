@@ -22,6 +22,7 @@ import {
   injectToolHardeningInstruction,
   cleanJSONSchemaForAntigravity,
   createSyntheticErrorResponse,
+  createSyntheticGeminiErrorResponse,
   recursivelyParseJsonStrings,
 } from "./request-helpers";
 import { deduplicateThinkingText, createThoughtBuffer } from "./core/streaming/transformer";
@@ -1655,6 +1656,52 @@ describe("createSyntheticErrorResponse", () => {
     const messageDelta = events.find((e) => e.type === "message_delta");
 
     expect(messageDelta?.delta?.stop_reason).toBe("end_turn");
+  });
+});
+
+describe("createSyntheticGeminiErrorResponse", () => {
+  it("returns a 200 SSE response", () => {
+    const response = createSyntheticGeminiErrorResponse("Test error", "antigravity-gemini-3.8-flash");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+  });
+
+  it("carries the message in a Gemini text chunk", async () => {
+    const response = createSyntheticGeminiErrorResponse("Quota exhausted", "antigravity-gemini-3.8-flash");
+    const text = await response.text();
+    const chunks = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice("data: ".length)));
+
+    const firstText = chunks[0].candidates[0].content.parts[0].text;
+    expect(firstText).toBe("Quota exhausted");
+  });
+
+  it("terminates the stream with a finish reason", async () => {
+    const response = createSyntheticGeminiErrorResponse("Error", "antigravity-gemini-3.8-flash");
+    const text = await response.text();
+    const chunks = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice("data: ".length)));
+
+    const lastChunk = chunks[chunks.length - 1];
+    expect(lastChunk.candidates[0].finishReason).toBe("STOP");
+  });
+
+  it("keeps the requested model on every chunk", async () => {
+    const response = createSyntheticGeminiErrorResponse("Error", "antigravity-gemini-3.8-flash");
+    const text = await response.text();
+    const chunks = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice("data: ".length)));
+
+    for (const chunk of chunks) {
+      expect(chunk.modelVersion).toBe("antigravity-gemini-3.8-flash");
+    }
   });
 });
 

@@ -36,6 +36,11 @@ function synthesizeErrorResponse(errorPayload: unknown): unknown {
           role: 'model',
           parts: [{ text: `[Antigravity] Upstream Google error ${status}: ${message}` }],
         },
+        // Without a finish reason the adapter sees a stream that simply stops
+        // and the session retries with "unknown finish reason" instead of
+        // showing the upstream message.
+        finishReason: 'STOP',
+        index: 0,
       },
     ],
   };

@@ -1487,6 +1487,8 @@ it("removes x-api-key header", () => {
       const text = payload.response.candidates[0]!.content.parts[0]!.text;
       expect(text).toContain("RESOURCE_EXHAUSTED");
       expect(text).toContain("quota exceeded");
+      const candidate = payload.response.candidates[0] as unknown as { finishReason?: string };
+      expect(candidate.finishReason).toBe("STOP");
       expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("upstream error event"));
     });
 
