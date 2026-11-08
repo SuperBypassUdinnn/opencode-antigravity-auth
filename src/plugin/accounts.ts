@@ -447,6 +447,11 @@ export class AccountManager {
   private activeSaves = new Set<Promise<void>>();
   private saveTail: Promise<void> = Promise.resolve();
   private managedStorage = false;
+  /** Rate-limit markers removed by quota reconciliation, with the reset value
+   * they carried. Managed storage merges limits with Math.max, which would
+   * resurrect a deletion, so a clear only reaches disk while the persisted
+   * value still matches what was removed. */
+  private clearedRateLimits = new Map<number, Map<QuotaKey, number>>();
   private persistedAccounts = new Map<number, { refreshToken: string; projectId?: string; managedProjectId?: string; enabled: boolean; fingerprintID?: string }>();
   private credentialSources = new Map<number, Map<string, RefreshParts>>();
   private persistedSelections: Partial<Record<ModelFamily, string>> = {};
@@ -549,8 +554,10 @@ export class AccountManager {
         ) % this.accounts.length;
       }
 
-      // Persist updated fingerprint versions and reconciled rate limits to disk
-      if ((fingerprintVersionChanged || rateLimitsReconciled) && !managedStorage) {
+      // Persist updated fingerprint versions and reconciled rate limits to disk.
+      // Managed storage merges rather than replaces, so a reconciled deletion
+      // has to be flushed through its patch path as well.
+      if (rateLimitsReconciled || (fingerprintVersionChanged && !managedStorage)) {
         this.requestSaveToDisk();
       }
 
@@ -1365,6 +1372,16 @@ export class AccountManager {
           }
         }
         if (credentialsOnly) continue;
+        const persistedLimits = current.rateLimitResetTimes;
+        const cleared = this.clearedRateLimits.get(account.index);
+        if (persistedLimits && cleared) {
+          for (const [key, clearedReset] of cleared) {
+            const persistedReset = persistedLimits[key];
+            if (persistedReset !== undefined && persistedReset <= clearedReset) {
+              delete persistedLimits[key];
+            }
+          }
+        }
         current.lastUsed = Math.max(current.lastUsed, account.lastUsed);
         current.rateLimitResetTimes ??= {};
         for (const [key, reset] of Object.entries(account.rateLimitResetTimes)) {
@@ -1395,6 +1412,11 @@ export class AccountManager {
         }
       }
     });
+    // The merge above applied every recorded deletion; a failed write throws,
+    // so reaching this point means the cleared markers are gone from disk.
+    for (const snapshot of snapshots) {
+      this.clearedRateLimits.delete(snapshot.value.index);
+    }
     for (const { account, value: snapshot, base } of snapshots) {
       const current = saved?.accounts.find(item => account.id ? item.id === account.id : item.refreshToken === snapshot.parts.refreshToken);
       if (!current) { account.enabled = false; continue; }
@@ -1658,7 +1680,15 @@ export class AccountManager {
         }
       }
 
+      const resetTime = account.rateLimitResetTimes[key];
+      if (resetTime === undefined) continue;
       delete account.rateLimitResetTimes[key];
+      let cleared = this.clearedRateLimits.get(account.index);
+      if (!cleared) {
+        cleared = new Map();
+        this.clearedRateLimits.set(account.index, cleared);
+      }
+      cleared.set(key, resetTime);
       changed = true;
     }
     return changed;

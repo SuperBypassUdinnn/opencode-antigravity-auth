@@ -1576,6 +1576,47 @@ describe("retired manager control and deletion invariants", () => {
   })
 })
 
+describe("managed storage rate limit reconciliation", () => {
+  const markerKey = "gemini-antigravity:gemini-3.8-flash-high"
+  const markerReset = 9_999_999_999_999
+
+  function storedWithStaleMarker(reset = markerReset): AccountStorageV4 {
+    return {
+      version: 4,
+      accounts: [{
+        ...pool().accounts[0]!,
+        id: "stable-first",
+        rateLimitResetTimes: { [markerKey]: reset },
+        cachedQuota: { "gemini-flash": { remainingFraction: 1, modelCount: 1, models: { "gemini-3.8-flash-high": { remainingFraction: 1 } } } },
+        cachedQuotaUpdatedAt: Date.now(),
+      }],
+      activeIndex: 0,
+    }
+  }
+
+  it("removes reconciled markers from disk", async () => {
+    state.storage = storedWithStaleMarker()
+    const manager = new AccountManager(undefined, structuredClone(state.storage), true)
+    manager.useManagedStorage()
+    await manager.saveToDisk()
+    expect(state.storage!.accounts[0]!.rateLimitResetTimes?.[markerKey]).toBeUndefined()
+    await manager.retire()
+  })
+
+  it("keeps a marker another writer set after reconciliation", async () => {
+    state.storage = storedWithStaleMarker()
+    const manager = new AccountManager(undefined, structuredClone(state.storage), true)
+    manager.useManagedStorage()
+    const storage = await import("./plugin/storage.ts")
+    await storage.updateAccounts(current => {
+      current.accounts[0]!.rateLimitResetTimes = { [markerKey]: markerReset + 1 }
+    })
+    await manager.saveToDisk()
+    expect(state.storage!.accounts[0]!.rateLimitResetTimes?.[markerKey]).toBe(markerReset + 1)
+    await manager.retire()
+  })
+})
+
 describe("OAuth completing during an earlier save", () => {
   function pauseNextSave() {
     let announce!: () => void
