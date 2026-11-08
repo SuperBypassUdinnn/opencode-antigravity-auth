@@ -1765,9 +1765,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // Non-quota permission 403s (e.g. a missing product license) are
           // account-independent: Google rejects the product, not the account.
           // Once several distinct accounts return the same kind of rejection,
-          // rotating further only burns time.
+          // rotating further only burns time. A per-attempt ceiling covers the
+          // collapsed-pool case where selection keeps returning the SAME
+          // account, so the distinct-account count never grows.
           const forbiddenAccounts = new Set<number>();
+          let forbiddenAttempts = 0;
           const MAX_FORBIDDEN_ACCOUNTS = 3;
+          const MAX_FORBIDDEN_ATTEMPTS = 6;
           const abortSignal = init?.signal ?? undefined;
 
           const forbiddenError = (accountCount: number): Error | undefined => {
@@ -2694,14 +2698,18 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                   if (forbiddenDetail) {
                     forbiddenAccounts.add(account.index);
+                    forbiddenAttempts += 1;
                   }
-                  if (forbiddenAccounts.size >= MAX_FORBIDDEN_ACCOUNTS) {
+                  if (
+                    forbiddenAccounts.size >= MAX_FORBIDDEN_ACCOUNTS ||
+                    forbiddenAttempts >= MAX_FORBIDDEN_ATTEMPTS
+                  ) {
                     checkAborted(); // Respect user cancellation before giving up
                     pushDebug(
-                      `forbidden-403: giving up after ${forbiddenAccounts.size} distinct accounts (detail: ${forbiddenDetail})`,
+                      `forbidden-403: giving up (${forbiddenAccounts.size} distinct accounts, ${forbiddenAttempts} attempts; detail: ${forbiddenDetail})`,
                     );
                     return createSyntheticErrorResponse(
-                      `Google rejected this request with 403 PERMISSION_DENIED: ${forbiddenDetail} The rejection repeated across ${forbiddenAccounts.size} distinct accounts, so account rotation cannot fix it.`,
+                      `Google rejected this request with 403 PERMISSION_DENIED: ${forbiddenDetail} The rejection repeated across ${forbiddenAccounts.size} distinct account(s) / ${forbiddenAttempts} attempts, so retrying cannot fix it.`,
                       prepared.requestedModel,
                     );
                   }
