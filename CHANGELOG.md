@@ -4,6 +4,13 @@
 
 ### Changed
 
+- The Gemini CLI quota path is closed by default. When the Antigravity pool is
+  exhausted, requests now surface a quota-exhausted error with the reset time
+  instead of falling back to the legacy cloudcode-pa endpoint, which rejects
+  accounts without a Code Assist license with 403 SUBSCRIPTION_REQUIRED.
+  Set `quota_fallback: true` to restore the automatic Antigravity/Gemini CLI
+  fallback; `cli_first` also requires this flag.
+
 - Gemini 3.8 Flash appears as a single model with `low`, `medium`, and `high`
   variants instead of three separate entries. The selected variant maps to the
   backend tier model id, since the catalog publishes no bare model id.

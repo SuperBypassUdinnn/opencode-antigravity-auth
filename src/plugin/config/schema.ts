@@ -269,9 +269,16 @@ export const AntigravityConfigSchema = z.object({
   max_rate_limit_wait_seconds: z.number().min(0).max(3600).default(300),
   
   /**
-   * @deprecated Kept only for backward compatibility.
-   * This flag is ignored at runtime.
-   * Gemini requests always fall back between Antigravity and Gemini CLI quotas.
+   * Allow Gemini requests to fall back to the Gemini CLI quota pool (legacy
+   * cloudcode-pa endpoint) when the Antigravity pool is exhausted.
+   *
+   * When false (default): the Gemini CLI path stays closed. An exhausted
+   * Antigravity pool surfaces a quota-exhausted error with the reset time
+   * instead of the legacy endpoint's 403 SUBSCRIPTION_REQUIRED license
+   * rejection, and `cli_first` has no effect.
+   * When true: the automatic fallback between Antigravity and Gemini CLI
+   * quotas is restored, and `cli_first` can route Gemini models to the
+   * Gemini CLI pool first.
    *
    * @default false
    */
@@ -279,10 +286,12 @@ export const AntigravityConfigSchema = z.object({
 
   /**
    * Prefer gemini-cli routing before Antigravity for Gemini models.
-   * 
+   * Requires `quota_fallback: true`; otherwise the Gemini CLI path is closed
+   * and this option is ignored.
+   *
    * When false (default): Antigravity is tried first, then gemini-cli.
    * When true: gemini-cli is tried first, then Antigravity.
-   * 
+   *
    * @default false
    */
   cli_first: z.boolean().default(false),

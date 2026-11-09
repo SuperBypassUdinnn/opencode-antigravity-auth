@@ -4044,14 +4044,20 @@ function resolveHeaderRoutingDecision(
   family: ModelFamily,
   config: AntigravityConfig,
 ): HeaderRoutingDecision {
-  const cliFirst = getCliFirst(config);
+  // The Gemini CLI quota path is closed unless explicitly opted in via
+  // quota_fallback: the legacy cloudcode-pa endpoint rejects accounts without
+  // a Code Assist license (403 SUBSCRIPTION_REQUIRED), so an exhausted
+  // Antigravity pool should surface a quota-exhausted error instead of
+  // license noise from a pool these accounts cannot use.
+  const quotaFallback = config.quota_fallback === true;
+  const cliFirst = getCliFirst(config) && quotaFallback;
   const preferredHeaderStyle = getHeaderStyleFromUrl(urlString, family, cliFirst);
   const explicitQuota = isExplicitQuotaFromUrl(urlString);
   return {
     cliFirst,
     preferredHeaderStyle,
     explicitQuota,
-    allowQuotaFallback: family === "gemini",
+    allowQuotaFallback: family === "gemini" && quotaFallback,
   };
 }
 

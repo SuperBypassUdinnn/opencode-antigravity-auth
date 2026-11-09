@@ -36,6 +36,7 @@ const state = vi.hoisted(() => ({
   callback: undefined as URL | undefined,
   exchange: vi.fn(),
   connectionStatus: vi.fn(async (_input: Parameters<Plugin.Context["integration"]["connection"]["status"]>[0]) => undefined),
+  configOverrides: {} as Record<string, unknown>,
 }))
 
 vi.mock("./plugin/storage.ts", async (importOriginal) => {
@@ -73,7 +74,7 @@ vi.mock("./plugin/storage.ts", async (importOriginal) => {
 })
 vi.mock("./plugin/config/index.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("./plugin/config/index.ts")>(),
-  loadConfig: () => ({ ...DEFAULT_CONFIG, proactive_token_refresh: true, request_jitter_max_ms: 0, quota_refresh_interval_minutes: 0 }),
+  loadConfig: () => ({ ...DEFAULT_CONFIG, proactive_token_refresh: true, request_jitter_max_ms: 0, quota_refresh_interval_minutes: 0, ...state.configOverrides }),
 }))
 vi.mock("./plugin/version.ts", () => ({ refreshAntigravityVersion: async () => undefined, ANTIGRAVITY_VERSION_REFRESH_INTERVAL_MS: 10800000 }))
 vi.mock("./plugin/project.ts", () => ({
@@ -283,6 +284,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
   discoveryGate.reset()
+  state.configOverrides = {}
   vi.restoreAllMocks()
 })
 
@@ -737,7 +739,8 @@ describe("discovery and account eligibility regressions", () => {
     expect(state.storage?.accounts[0]?.refreshToken).toBe("quota-rotated")
   })
 
-  it("does not rotate toward an ineligible account instead of falling back to CLI", async () => {
+  it("does not rotate toward an ineligible account and falls back to CLI when quota_fallback is enabled", async () => {
+    state.configOverrides = { quota_fallback: true }
     const network = mockNetwork()
     state.storage!.accounts[0]!.refreshToken = "gemini-ineligible"
     state.storage!.accounts.push({ ...pool().accounts[0]!, email: "gemini-eligible@example.test", refreshToken: "gemini-eligible", rateLimitResetTimes: { "gemini-antigravity": Date.now() + 3600_000 } })
@@ -755,6 +758,29 @@ describe("discovery and account eligibility regressions", () => {
     await stream(sdk, id, controller.signal).catch(() => [])
     expect(checks).toBeLessThanOrEqual(1)
     expect(network.mock.calls.some(([input]) => (input instanceof Request ? input.url : String(input)).includes(":streamGenerateContent"))).toBe(true)
+  })
+
+  it("keeps the Gemini CLI fallback closed when quota_fallback is disabled", async () => {
+    const network = mockNetwork()
+    state.storage!.accounts[0]!.refreshToken = "gemini-ineligible"
+    state.storage!.accounts.push({ ...pool().accounts[0]!, email: "gemini-eligible@example.test", refreshToken: "gemini-eligible", rateLimitResetTimes: { "gemini-antigravity": Date.now() + 3600_000 } })
+    const id = "antigravity-gemini-3.8-flash-high"
+    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { [id]: [accountID(state.storage!.accounts[1]!)] } })
+    const { sdk } = await adapter.sdk(id)
+    const original = AccountManager.prototype.hasOtherAccountWithAntigravityAvailable
+    let checks = 0
+    vi.spyOn(AccountManager.prototype, "hasOtherAccountWithAntigravityAvailable").mockImplementation(function (this: AccountManager, ...args) {
+      original.apply(this, args)
+      checks += 1
+      return false
+    })
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error("bounded")), 50)
+    await stream(sdk, id, controller.signal).catch(() => [])
+    // The rescue check lives inside the fallback branch, so a closed path
+    // never consults it, and no request reaches either quota endpoint.
+    expect(checks).toBe(0)
+    expect(network.mock.calls.some(([input]) => (input instanceof Request ? input.url : String(input)).includes(":streamGenerateContent"))).toBe(false)
   })
 
   it("blocks a cached SDK after the only account supporting its model is disabled", async () => {

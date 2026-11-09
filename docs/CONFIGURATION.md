@@ -62,7 +62,7 @@ Settings for managing multiple Google accounts.
 | `account_selection_strategy` | `"hybrid"` | How to select accounts |
 | `switch_on_first_rate_limit` | `true` | Switch account immediately on first 429 |
 | `pid_offset_enabled` | `false` | Distribute sessions across accounts (for parallel agents) |
-| `quota_fallback` | `false` | Deprecated (ignored). Kept for backward compatibility; Gemini fallback is automatic |
+| `quota_fallback` | `false` | Allow Gemini requests to fall back to the Gemini CLI quota pool (legacy cloudcode-pa endpoint) when the Antigravity pool is exhausted. `false` (default) keeps that path closed: an exhausted Antigravity pool surfaces a quota-exhausted error with the reset time instead of the legacy endpoint's 403 SUBSCRIPTION_REQUIRED license rejection. `true` restores the automatic fallback and makes `cli_first` effective |
 
 ### Strategy Guide
 
