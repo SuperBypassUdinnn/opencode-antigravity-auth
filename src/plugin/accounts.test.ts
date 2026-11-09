@@ -1,16 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AccountManager, type ModelFamily, type HeaderStyle, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, type RateLimitReason, resolveQuotaGroup } from "./accounts";
+import { AccountManager, isLicenseBlocked, type ModelFamily, type HeaderStyle, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, type RateLimitReason, resolveQuotaGroup } from "./accounts";
 import { saveAccounts, type AccountStorageV4 } from "./storage";
 import type { OAuthAuthDetails } from "./types";
 
 // Mock storage to prevent test data from leaking to real config files
+const managedStore = vi.hoisted(() => ({ value: null as import("./storage").AccountStorageV4 | null }));
 vi.mock("./storage", async (importOriginal) => {
   const original = await importOriginal<typeof import("./storage")>();
   return {
     ...original,
     saveAccounts: vi.fn().mockResolvedValue(undefined),
     saveAccountsReplace: vi.fn().mockResolvedValue(undefined),
+    updateAccounts: vi.fn(async (update: (storage: import("./storage").AccountStorageV4) => void) => {
+      if (!managedStore.value) return null;
+      const storage = JSON.parse(JSON.stringify(managedStore.value)) as import("./storage").AccountStorageV4;
+      update(storage);
+      managedStore.value = storage;
+      return storage;
+    }),
   };
 });
 
@@ -2106,6 +2114,85 @@ describe("AccountManager", () => {
 
       vi.useRealTimers();
     });
+  });
+});
+
+describe("license bench (SUBSCRIPTION_REQUIRED)", () => {
+  const BENCH_MS = 12 * 60 * 60 * 1000;
+  const stored: AccountStorageV4 = {
+    version: 4,
+    activeIndex: 0,
+    accounts: [
+      { id: "unlicensed", refreshToken: "unlicensed", addedAt: 1, lastUsed: 1 },
+      { id: "healthy", refreshToken: "healthy", addedAt: 1, lastUsed: 1 },
+    ],
+  };
+
+  it("benches an account out of every selection gate until the bench expires", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-09T00:00:00Z"));
+    try {
+      const manager = new AccountManager(undefined, structuredClone(stored));
+      const benched = manager.getAccounts()[0]!;
+      manager.markLicenseBlocked(benched, "gemini", BENCH_MS);
+
+      expect(isLicenseBlocked(benched, "gemini")).toBe(true);
+      expect(isLicenseBlocked(benched, "claude")).toBe(false);
+      for (const strategy of ["sticky", "round-robin", "hybrid"] as const) {
+        const selected = manager.getCurrentOrNextForFamily("gemini", "gemini-3.8-flash-high", strategy, "antigravity", false, 100, 600000);
+        expect(selected?.parts.refreshToken).toBe("healthy");
+      }
+      // The whole pool benched for the family: the wait estimate names the
+      // bench instead of reporting an instantly servable pool.
+      manager.setAccountEnabled(1, false);
+      const waitMs = manager.getMinWaitTimeForFamily("gemini");
+      expect(waitMs).toBeGreaterThan(BENCH_MS - 60_000);
+      expect(waitMs).toBeLessThanOrEqual(BENCH_MS);
+
+      vi.setSystemTime(new Date("2026-11-09T13:00:00Z"));
+      expect(isLicenseBlocked(benched, "gemini")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the bench when the user re-enables the account", () => {
+    const manager = new AccountManager(undefined, structuredClone(stored));
+    const benched = manager.getAccounts()[0]!;
+    manager.markLicenseBlocked(benched, "gemini", BENCH_MS);
+    manager.setAccountEnabled(0, true);
+    expect(isLicenseBlocked(benched, "gemini")).toBe(false);
+  });
+
+  it("persists the bench through the legacy snapshot", async () => {
+    const save = vi.mocked(saveAccounts);
+    save.mockClear();
+    const manager = new AccountManager(undefined, structuredClone(stored));
+    const benched = manager.getAccounts()[0]!;
+    manager.markLicenseBlocked(benched, "gemini", BENCH_MS);
+    await manager.saveToDisk();
+    const written = save.mock.calls.at(-1)?.[0].accounts[0];
+    expect(written?.licenseBlockedUntil?.gemini).toBeGreaterThan(Date.now() + BENCH_MS - 60_000);
+    expect(written?.licenseBlockReason).toBe("SUBSCRIPTION_REQUIRED");
+  });
+
+  it("persists the bench through the managed patch merge and keeps the longer block", async () => {
+    managedStore.value = structuredClone(stored);
+    try {
+      const manager = new AccountManager(undefined, structuredClone(stored));
+      manager.useManagedStorage();
+      const benched = manager.getAccounts()[0]!;
+      const longBench = manager.markLicenseBlocked(benched, "gemini", BENCH_MS);
+      manager.markLicenseBlocked(benched, "gemini", 60_000);
+      await manager.saveToDisk();
+      const written = managedStore.value.accounts.find(account => account.id === "unlicensed");
+      // Tolerance for the wall clock moving between bench and assertion.
+      expect(written?.licenseBlockedUntil?.gemini).toBeGreaterThan(Date.now() + longBench - 60_000);
+      expect(written?.licenseBlockedUntil?.gemini).toBeLessThanOrEqual(Date.now() + longBench);
+      expect(written?.licenseBlockReason).toBe("SUBSCRIPTION_REQUIRED");
+    } finally {
+      managedStore.value = null;
+    }
   });
 });
 

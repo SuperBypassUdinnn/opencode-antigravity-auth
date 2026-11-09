@@ -204,6 +204,11 @@ export interface ManagedAccount {
   /** Cached quota data from last checkAccountsQuota() call */
   cachedQuota?: Partial<Record<QuotaGroup, QuotaGroupSummary>>;
   cachedQuotaUpdatedAt?: number;
+  /** Deterministic product-license rejection bench (SUBSCRIPTION_REQUIRED):
+   * Google cannot grant the entitlement on retry, so selection skips the
+   * account for that family until this timestamp. */
+  licenseBlockedUntil?: Partial<Record<ModelFamily, number>>;
+  licenseBlockReason?: string;
   verificationRequired?: boolean;
   verificationRequiredAt?: number;
   verificationRequiredReason?: string;
@@ -282,6 +287,20 @@ function clearExpiredRateLimits(account: ManagedAccount): void {
       delete account.rateLimitResetTimes[key];
     }
   }
+}
+
+/** True while a product-license bench for the family is active. Expired
+ * benches are dropped lazily so persistence stops rewriting them. */
+export function isLicenseBlocked(account: ManagedAccount, family: ModelFamily): boolean {
+  const until = account.licenseBlockedUntil?.[family];
+  if (until === undefined) return false;
+  if (nowMs() < until) return true;
+  delete account.licenseBlockedUntil?.[family];
+  if (account.licenseBlockedUntil && Object.keys(account.licenseBlockedUntil).length === 0) {
+    account.licenseBlockedUntil = undefined;
+    account.licenseBlockReason = undefined;
+  }
+  return false;
 }
 
 /** True when a quota group reports quota left, either on the group aggregate
@@ -511,6 +530,8 @@ export class AccountManager {
             fingerprintHistory: acc.fingerprintHistory ?? [],
             cachedQuota: acc.cachedQuota as Partial<Record<QuotaGroup, QuotaGroupSummary>> | undefined,
             cachedQuotaUpdatedAt: acc.cachedQuotaUpdatedAt,
+            licenseBlockedUntil: acc.licenseBlockedUntil,
+            licenseBlockReason: acc.licenseBlockReason,
             verificationRequired: acc.verificationRequired,
             verificationRequiredAt: acc.verificationRequiredAt,
             verificationRequiredReason: acc.verificationRequiredReason,
@@ -702,7 +723,8 @@ export class AccountManager {
             // accounts it would immediately skip when only one quota pool
             // carried a mark, burning rounds without sending anything.
             isRateLimited: isRateLimitedForHeaderStyle(acc, family, headerStyle, model) ||
-                          isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model),
+                          isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model) ||
+                          isLicenseBlocked(acc, family),
             isCoolingDown: this.isAccountCoolingDown(acc),
           };
         });
@@ -745,7 +767,7 @@ export class AccountManager {
       clearExpiredRateLimits(current);
       const isLimitedForRequestedStyle = isRateLimitedForHeaderStyle(current, family, headerStyle, model);
       const isOverThreshold = isOverSoftQuotaThreshold(current, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model);
-      if (!isLimitedForRequestedStyle && !isOverThreshold && !this.isAccountCoolingDown(current)) {
+      if (!isLimitedForRequestedStyle && !isOverThreshold && !this.isAccountCoolingDown(current) && !isLicenseBlocked(current, family)) {
         this.markTouchedForQuota(current, quotaKey);
         return current;
       }
@@ -778,6 +800,7 @@ export class AccountManager {
       const reasons: string[] = [];
       if (isRateLimitedForHeaderStyle(a, family, headerStyle, model)) reasons.push("rate-limited");
       if (this.isAccountCoolingDown(a)) reasons.push("cooling-down");
+      if (isLicenseBlocked(a, family)) reasons.push("license-blocked");
       if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) reasons.push("soft-quota");
       const healthScore = healthTracker.getScore(a.index);
       if (healthScore < minUsable) reasons.push(`health=${healthScore}<${minUsable}`);
@@ -792,7 +815,8 @@ export class AccountManager {
       return a.enabled !== false && eligible(a) &&
              !isRateLimitedForHeaderStyle(a, family, headerStyle, model) && 
              !isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model) &&
-             !this.isAccountCoolingDown(a);
+             !this.isAccountCoolingDown(a) &&
+             !isLicenseBlocked(a, family);
     });
 
     if (available.length === 0) {
@@ -822,6 +846,25 @@ export class AccountManager {
   ): void {
     const key = getQuotaKey(family, headerStyle, model);
     account.rateLimitResetTimes[key] = nowMs() + retryAfterMs;
+  }
+
+  /**
+   * Bench the account for the family after a deterministic product-license
+   * rejection (403 SUBSCRIPTION_REQUIRED). Unlike a rate limit, Google cannot
+   * grant the entitlement on retry, so selection skips the account until the
+   * bench expires or the user re-enables it. Longer blocks win so concurrent
+   * families cannot shorten an existing bench.
+   */
+  markLicenseBlocked(account: ManagedAccount, family: ModelFamily, durationMs: number, reason = "SUBSCRIPTION_REQUIRED"): number {
+    const until = nowMs() + Math.max(0, durationMs);
+    if (until <= (account.licenseBlockedUntil?.[family] ?? 0)) {
+      return Math.max(0, (account.licenseBlockedUntil?.[family] ?? 0) - nowMs());
+    }
+    account.licenseBlockedUntil ??= {};
+    account.licenseBlockedUntil[family] = until;
+    account.licenseBlockReason = reason;
+    this.requestSaveToDisk();
+    return Math.max(0, until - nowMs());
   }
 
   /**
@@ -1013,6 +1056,11 @@ export class AccountManager {
       }
       // Clear expired rate limits before checking
       clearExpiredRateLimits(acc);
+      // A license-benched account is skipped by selection, so it cannot
+      // justify switching instead of falling back to gemini-cli either.
+      if (isLicenseBlocked(acc, family)) {
+        return false;
+      }
       // Check if antigravity is available for this account
       return !isRateLimitedForHeaderStyle(acc, family, "antigravity", model);
     });
@@ -1031,6 +1079,17 @@ export class AccountManager {
           const next = this.accounts.find((a, i) => i !== accountIndex && a.enabled !== false);
           this.currentAccountIndexByFamily[family] = next?.index ?? -1;
         }
+      }
+    } else {
+      // Re-enabling is an explicit retry decision: drop any product-license
+      // bench so the account is immediately selectable again.
+      if (account.licenseBlockedUntil) {
+        delete account.licenseBlockedUntil.claude;
+        delete account.licenseBlockedUntil.gemini;
+      }
+      if (account.licenseBlockedUntil && Object.keys(account.licenseBlockedUntil).length === 0) {
+        account.licenseBlockedUntil = undefined;
+        account.licenseBlockReason = undefined;
       }
     }
 
@@ -1187,6 +1246,7 @@ export class AccountManager {
         : isRateLimitedForFamily(a, family, model);
       if (rateLimited) return false;
       if (this.isAccountCoolingDown(a)) return false;
+      if (isLicenseBlocked(a, family)) return false;
       if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) return false;
       if (healthTracker.getScore(a.index) < minUsable) return false;
       return true;
@@ -1223,6 +1283,10 @@ export class AccountManager {
       }
       if (a.coolingDownUntil !== undefined && a.coolingDownUntil > now) {
         blockers.push(a.coolingDownUntil - now);
+      }
+      const licenseBlockedUntil = a.licenseBlockedUntil?.[family];
+      if (licenseBlockedUntil !== undefined && licenseBlockedUntil > now) {
+        blockers.push(licenseBlockedUntil - now);
       }
       if (
         softQuotaThresholdPercent < 100 &&
@@ -1293,6 +1357,10 @@ export class AccountManager {
       }
       if (a.coolingDownUntil !== undefined && a.coolingDownUntil > now) {
         causes.push(`cooling down after ${a.cooldownReason ?? "failure"} (${formatWaitTime(a.coolingDownUntil - now)} left)`);
+      }
+      const licenseBlockedUntil = a.licenseBlockedUntil?.[family];
+      if (licenseBlockedUntil !== undefined && licenseBlockedUntil > now) {
+        causes.push(`product license missing (${a.licenseBlockReason ?? "SUBSCRIPTION_REQUIRED"}, benched ${formatWaitTime(licenseBlockedUntil - now)})`);
       }
       if (softQuotaThresholdPercent < 100 && isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) {
         const groupData = a.cachedQuota?.[resolveQuotaGroup(family, model)];
@@ -1391,6 +1459,14 @@ export class AccountManager {
           current.coolingDownUntil = account.coolingDownUntil;
           current.cooldownReason = account.cooldownReason;
         }
+        for (const family of ["claude", "gemini"] as const) {
+          const until = account.licenseBlockedUntil?.[family];
+          if (until !== undefined && until > (current.licenseBlockedUntil?.[family] ?? 0)) {
+            current.licenseBlockedUntil ??= {};
+            current.licenseBlockedUntil[family] = until;
+            current.licenseBlockReason = account.licenseBlockReason;
+          }
+        }
         if ((account.cachedQuotaUpdatedAt ?? 0) > (current.cachedQuotaUpdatedAt ?? 0)) {
           current.cachedQuota = account.cachedQuota;
           current.cachedQuotaUpdatedAt = account.cachedQuotaUpdatedAt;
@@ -1474,6 +1550,8 @@ export class AccountManager {
         fingerprintHistory: a.fingerprintHistory?.length ? a.fingerprintHistory : undefined,
         cachedQuota: a.cachedQuota && Object.keys(a.cachedQuota).length > 0 ? a.cachedQuota : undefined,
         cachedQuotaUpdatedAt: a.cachedQuotaUpdatedAt,
+        licenseBlockedUntil: a.licenseBlockedUntil && Object.keys(a.licenseBlockedUntil).length > 0 ? a.licenseBlockedUntil : undefined,
+        licenseBlockReason: a.licenseBlockReason,
         verificationRequired: a.verificationRequired,
         verificationRequiredAt: a.verificationRequiredAt,
         verificationRequiredReason: a.verificationRequiredReason,

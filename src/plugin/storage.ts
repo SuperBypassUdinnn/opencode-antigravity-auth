@@ -207,6 +207,9 @@ export interface AccountMetadataV3 {
    * ./quota: per-model remaining quota used by account selection. */
   cachedQuota?: Record<string, { remainingFraction?: number; resetTime?: string; modelCount: number; models?: Record<string, { remainingFraction?: number; resetTime?: string }> }>;
   cachedQuotaUpdatedAt?: number;
+  /** Deterministic product-license rejection bench per family (SUBSCRIPTION_REQUIRED). */
+  licenseBlockedUntil?: { claude?: number; gemini?: number };
+  licenseBlockReason?: string;
 }
 
 export const accountTokenHash = (token: string): string => createHash("sha256").update(token).digest("hex").slice(0, 24);

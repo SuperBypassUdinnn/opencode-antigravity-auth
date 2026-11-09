@@ -1773,6 +1773,15 @@ export const createAntigravityPlugin = (providerId: string) => async (
           let forbiddenAttempts = 0;
           const MAX_FORBIDDEN_ACCOUNTS = 3;
           const MAX_FORBIDDEN_ATTEMPTS = 6;
+          // A product-license rejection (403 SUBSCRIPTION_REQUIRED) is
+          // deterministic for the account: Google cannot grant the entitlement
+          // on retry. Bench the account for the family and keep rotating, so a
+          // licensed account deeper in the pool still serves this turn; the
+          // bench also persists, so later turns skip benched accounts at
+          // selection time instead of paying for another attempt.
+          const licenseBenchedAccounts = new Set<number>();
+          const LICENSE_BENCH_MS = 12 * 60 * 60 * 1000;
+          const MAX_LICENSE_BENCH_ACCOUNTS = 8;
           const abortSignal = init?.signal ?? undefined;
 
           const forbiddenError = (accountCount: number): Error | undefined => {
@@ -2688,6 +2697,42 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       `quota-exhausted-403: idx=${account.index} reset=${bodyInfo.quotaResetTime ?? "unknown"} backoffMs=${cooldownMs} reason=${quotaReason}`,
                     );
 
+                    lastFailure = createFailureContext(response);
+                    shouldSwitchAccount = true;
+                    break;
+                  }
+
+                  // A deterministic product-license rejection benches the
+                  // account for the family instead of counting toward the
+                  // give-up caps: the caps exist for rejections whose cause
+                  // rotation might dodge, while this one cannot succeed on
+                  // this account no matter how often it is retried.
+                  if (bodyInfo.reason === "SUBSCRIPTION_REQUIRED") {
+                    const benchMs = accountManager.markLicenseBlocked(account, family, LICENSE_BENCH_MS);
+                    const label = account.email || `Account ${account.index + 1}`;
+                    if (accountManager.shouldShowAccountToast(account.index, 60000)) {
+                      await showToast(
+                        `${label}: product license missing (SUBSCRIPTION_REQUIRED); benched ${Math.round(benchMs / 3_600_000)}h.`,
+                        "warning",
+                      );
+                      accountManager.markToastShown(account.index);
+                    }
+                    pushDebug(
+                      `license-bench: idx=${account.index} family=${family} benchMs=${benchMs} detail=${bodyInfo.message ?? extracted.message ?? "unknown"}`,
+                    );
+                    licenseBenchedAccounts.add(account.index);
+                    if (licenseBenchedAccounts.size >= MAX_LICENSE_BENCH_ACCOUNTS) {
+                      // Most of the pool lacks the license: rotating further
+                      // only repeats the same deterministic rejection.
+                      checkAborted();
+                      pushDebug(
+                        `license-bench: giving up (${licenseBenchedAccounts.size} distinct accounts; detail: ${bodyInfo.message ?? extracted.message ?? "unknown"})`,
+                      );
+                      const licenseMessage = `Google rejected this request with 403 PERMISSION_DENIED: ${bodyInfo.message ?? extracted.message ?? "product license missing"} ${licenseBenchedAccounts.size} account(s) lack the product license and were benched for ${Math.round(LICENSE_BENCH_MS / 3_600_000)}h, so no eligible account remains.`;
+                      const licenseSyntheticError =
+                        family === "gemini" ? createSyntheticGeminiErrorResponse : createSyntheticErrorResponse;
+                      return licenseSyntheticError(licenseMessage, prepared.requestedModel);
+                    }
                     lastFailure = createFailureContext(response);
                     shouldSwitchAccount = true;
                     break;
