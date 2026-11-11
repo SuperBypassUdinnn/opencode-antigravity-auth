@@ -16,9 +16,32 @@ export const ModelCatalogCacheSchema = z.object({
 // Used before login or when discovery is unavailable. Once connected, Google's
 // catalog replaces this list, including model IDs, names and token limits.
 const fallbackModels: Record<string, OpencodeModelDefinition> = Object.fromEntries(
-  ["antigravity-gemini-3-flash", "antigravity-gemini-3.8-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking"]
+  ["antigravity-gemini-3-flash", "antigravity-gemini-3.8-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking", "antigravity-gemini-4-argon", "antigravity-claude-sonnet-5-5", "antigravity-claude-opus-5-5-thinking"]
     .flatMap(id => OPENCODE_MODEL_DEFINITIONS[id] ? [[id, OPENCODE_MODEL_DEFINITIONS[id]]] : []),
 )
+
+/** Model bases that must wait for the per-account discovery catalog before they
+ * can be used. Before discovery the account pool is unknown, so common fallback
+ * models may use any account while pro-tier models wait for the catalog, and a
+ * free account never receives them. */
+export const PRE_DISCOVERY_GATED_MODEL_BASES: ReadonlySet<string> = new Set(["gemini-4-argon", "claude-sonnet-5-5", "claude-opus-5-5"])
+
+/**
+ * Strips a leading `antigravity-` prefix (case-insensitive), a trailing
+ * `-(minimal|low|medium|high)` tier suffix, and an optional `-thinking`
+ * decoration, lowercases, then checks membership in
+ * `PRE_DISCOVERY_GATED_MODEL_BASES`. The `-thinking` strip is needed because
+ * Google's backend ids for thinking models mix both shapes
+ * (claude-opus-5-5-high vs claude-opus-4-6-thinking-high). This gate only
+ * applies before the per-account discovery catalog is loaded.
+ */
+export function isPreDiscoveryGatedModel(catalogKey: string): boolean {
+  const key = catalogKey
+    .replace(/^antigravity-/i, "")
+    .replace(/-(minimal|low|medium|high)$/i, "")
+    .replace(/-thinking$/i, "")
+  return PRE_DISCOVERY_GATED_MODEL_BASES.has(key.toLowerCase())
+}
 
 function definition(model: OpencodeModelDefinition) {
   return {

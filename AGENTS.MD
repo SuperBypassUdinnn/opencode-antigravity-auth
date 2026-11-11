@@ -97,6 +97,7 @@ src/
     ├── storage.ts           # Persistent storage schemas (Zod)
     ├── fingerprint.ts       # Device fingerprint generation & headers
     ├── project.ts           # Managed project context resolution
+    ├── reset-time.ts        # Local-timezone reset stamps for user-facing output
     └── debug.ts             # Debug logging utilities
 ```
 

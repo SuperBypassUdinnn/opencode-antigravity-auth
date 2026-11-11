@@ -427,6 +427,19 @@ describe("OpenCode V2 adapter", () => {
     await expect(adapter.sdk("antigravity-gemini-3-pro")).rejects.toThrow("unavailable to the enabled Antigravity accounts")
   })
 
+  it("denies gated pro models before discovery while allowing free fallback models", async () => {
+    mockNetwork()
+    // No model-catalog is cached, so accountCatalogLoaded === false and the
+    // pre-discovery tier gate applies instead of per-account membership.
+    const adapter = await host({ connection: false })
+    const { sdk: gatedSdk } = await adapter.sdk("antigravity-gemini-4-argon")
+    await expect(stream(gatedSdk, "antigravity-gemini-4-argon")).rejects.toThrow(
+      "No enabled Antigravity account has access to this model",
+    )
+    const { sdk: freeSdk } = await adapter.sdk("antigravity-gemini-3.8-flash")
+    await expect(stream(freeSdk, "antigravity-gemini-3.8-flash")).resolves.toBeDefined()
+  })
+
   it("keeps its SDK route after Core rewrites standard Google packages following every transform", async () => {
     const adapter = await host({ nativeOverride: true })
     for (const [id, model] of adapter.models) {

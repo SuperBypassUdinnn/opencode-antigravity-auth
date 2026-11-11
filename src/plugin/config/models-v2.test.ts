@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions } from "./models-v2"
+import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, isPreDiscoveryGatedModel } from "./models-v2"
 import { isCatalogThinkingModel, resolveModelForHeaderStyle } from "../transform/model-resolver"
 
 describe("OpenCode V2 models", () => {
@@ -58,6 +58,25 @@ describe("OpenCode V2 models", () => {
       ],
     })
     expect(catalog["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
+  })
+})
+
+describe("pre-discovery model gate", () => {
+  it("includes the three new pro models in the fallback definitions", () => {
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-argon"]).toBeDefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-claude-sonnet-5-5"]).toBeDefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-claude-opus-5-5-thinking"]).toBeDefined()
+  })
+
+  it("flags gated bases regardless of prefix case and tier suffix", () => {
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-argon-high")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-argon")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-claude-sonnet-5-5")).toBe(true)
+    expect(isPreDiscoveryGatedModel("ANTIGRAVITY-CLAUDE-OPUS-5-5-THINKING-HIGH")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-claude-opus-5-5-high")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-3.8-flash")).toBe(false)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-3-flash-high")).toBe(false)
+    expect(isPreDiscoveryGatedModel("antigravity-claude-sonnet-4-6")).toBe(false)
   })
 })
 

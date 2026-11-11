@@ -8,7 +8,7 @@ import { authorizeAntigravity, exchangeAntigravity } from "./antigravity/oauth.t
 import { ANTIGRAVITY_REDIRECT_URI } from "./constants.ts"
 import { createAntigravityPlugin } from "./plugin.ts"
 import { accessTokenExpired, formatRefreshParts, parseRefreshParts } from "./plugin/auth.ts"
-import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, modelKeyMap, ModelCatalogCacheSchema } from "./plugin/config/models-v2.ts"
+import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, modelKeyMap, ModelCatalogCacheSchema, isPreDiscoveryGatedModel } from "./plugin/config/models-v2.ts"
 import { accountID, accountPoolIdentity, accountCredentialsIdentity, loadManagedAccounts, registerAccountManagement } from "./plugin/account-management.ts"
 import { checkAccountsQuota, type AvailableModel } from "./plugin/quota.ts"
 import { createLogger } from "./plugin/logger.ts"
@@ -133,8 +133,14 @@ export const AntigravityV2Plugin = Plugin.define({
       directory: ctx.location.directory,
       runtimeVersion: 2,
       canUseAccount: (account, model) => {
-        const eligible = modelAccounts[`antigravity-${resolveModelWithTier(model).actualModel}`]
-        return !accountCatalogLoaded || !!eligible?.includes(accountID(account))
+        const key = `antigravity-${resolveModelWithTier(model).actualModel}`
+        const eligible = modelAccounts[key]
+        // Before discovery the account pool is unknown, so common fallback
+        // models may use any account while pro-tier models wait for the
+        // catalog, so a free account never receives them.
+        return accountCatalogLoaded
+          ? !!eligible?.includes(accountID(account))
+          : !isPreDiscoveryGatedModel(key)
       },
       fetch: (input, init) => {
         const send = outbound.getStore() ?? globalThis.fetch

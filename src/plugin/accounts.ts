@@ -8,6 +8,7 @@ import type { QuotaGroup, QuotaGroupSummary, QuotaModelSummary } from "./quota";
 import { getModelFamily } from "./transform/model-resolver";
 import { debugLogToFile } from "./debug";
 import { formatAccountLabel, formatWaitTime } from "./logging-utils";
+import { formatResetStamp } from "./reset-time";
 
 
 export type { ModelFamily, HeaderStyle, CooldownReason } from "./storage";
@@ -1368,7 +1369,7 @@ export class AccountManager {
         const remaining = entry?.remainingFraction ?? groupData?.remainingFraction;
         const used = remaining === undefined ? "unknown" : `${((1 - remaining) * 100).toFixed(1)}%`;
         const resetTime = entry?.resetTime ?? groupData?.resetTime;
-        causes.push(`over the ${softQuotaThresholdPercent}% soft quota threshold (used ${used}${resetTime ? `, resets ${resetTime}` : ""})`);
+        causes.push(`over the ${softQuotaThresholdPercent}% soft quota threshold (used ${used}${resetTime ? `, resets ${formatResetStamp(resetTime)}` : ""})`);
       }
       const healthScore = healthTracker.getScore(a.index);
       if (healthScore < minUsable) {

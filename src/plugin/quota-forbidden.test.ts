@@ -19,7 +19,7 @@ describe("buildQuotaExhaustedMessage", () => {
     expect(message).toContain("Google quota exhausted for gemini-3-flash")
     expect(message).toContain("all 2 connected account(s)")
     expect(message).toContain("Antigravity quota")
-    expect(message).toContain("Quota resets at 2026-10-28T09:00:00Z")
+    expect(message).toContain("The quota window has already reset.")
     expect(message).toContain("opencode auth login")
     expect(message).toContain("Provider message: Resource has been exhausted.")
   })

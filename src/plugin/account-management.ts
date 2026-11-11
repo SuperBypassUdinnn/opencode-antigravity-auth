@@ -4,6 +4,7 @@ import { AntigravityAccountsRpc, type AccountSummary } from "./account-rpc.ts"
 import { parseRefreshParts } from "./auth.ts"
 import { checkAccountsQuota } from "./quota.ts"
 import { accountTokenHash, loadAccounts, matchesAccountToken, saveAccountCredentials, updateAccountCredentials, updateAccounts, type AccountMetadataV3 } from "./storage.ts"
+import { formatResetStamp } from "./reset-time.ts"
 import type { PluginClient } from "./types.ts"
 
 export const accountID = (account: Pick<AccountMetadataV3, "id" | "refreshToken">) => account.id ?? accountTokenHash(account.refreshToken)
@@ -86,11 +87,11 @@ export async function registerAccountManagement(
           if (result.error) { lines.push(`  ${result.error}`, ""); finish(); continue }
           for (const [group, quota] of Object.entries(result.quota?.groups ?? {})) {
             const percent = quota.remainingFraction === undefined ? "unknown" : `${Math.round(quota.remainingFraction * 100)}% remaining`
-            lines.push(`  Antigravity ${group}: ${percent}${quota.resetTime ? `; resets ${quota.resetTime}` : ""}`)
+            lines.push(`  Antigravity ${group}: ${percent}${quota.resetTime ? `; resets ${formatResetStamp(quota.resetTime)}` : ""}`)
           }
           if (result.quota?.error) lines.push(`  Antigravity: ${result.quota.error}`)
           for (const quota of result.geminiCliQuota?.models ?? []) {
-            lines.push(`  Gemini CLI ${quota.modelId}: ${Math.round(quota.remainingFraction * 100)}% remaining${quota.resetTime ? `; resets ${quota.resetTime}` : ""}`)
+            lines.push(`  Gemini CLI ${quota.modelId}: ${Math.round(quota.remainingFraction * 100)}% remaining${quota.resetTime ? `; resets ${formatResetStamp(quota.resetTime)}` : ""}`)
           }
           if (result.geminiCliQuota?.error) lines.push(`  Gemini CLI: ${result.geminiCliQuota.error}`)
           lines.push("")

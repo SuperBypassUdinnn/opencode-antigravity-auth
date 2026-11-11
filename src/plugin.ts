@@ -45,6 +45,7 @@ import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
 import { AccountManager, type ModelFamily, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
 import { formatWaitTime } from "./plugin/logging-utils";
+import { formatQuotaResetSuffix, formatResetStamp } from "./plugin/reset-time";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
 import { loadConfig, initRuntimeConfig, type AntigravityConfig } from "./plugin/config";
 import { createSessionRecoveryHook, getRecoverySuccessToast } from "./plugin/recovery";
@@ -1072,7 +1073,7 @@ interface QuotaExhaustion {
 
 function buildQuotaExhaustedMessage(quota: QuotaExhaustion, accountCount: number): string {
   const target = quota.model ? ` for ${quota.model}` : "";
-  const reset = quota.resetAt ? ` Quota resets at ${quota.resetAt}.` : "";
+  const reset = formatQuotaResetSuffix(quota.resetAt);
   const detail = quota.detail ? ` Provider message: ${quota.detail}` : "";
   return `Google quota exhausted${target}: all ${accountCount} connected account(s) ran out of ${quota.quotaName} quota.${reset} `
     + `Add another account with \`opencode auth login\` or wait for the quota to reset.${detail}`;
@@ -2598,8 +2599,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   const quotaName = headerStyle === "antigravity" ? "Antigravity" : "Gemini CLI";
 
                   if (accountCount > 1) {
-                    const quotaMsg = bodyInfo.quotaResetTime 
-                      ? ` (quota resets ${bodyInfo.quotaResetTime})`
+                    const quotaMsg = bodyInfo.quotaResetTime
+                      ? ` (quota resets ${formatResetStamp(bodyInfo.quotaResetTime)})`
                       : ``;
                     await showToast(`Rate limited again. Switching account in 5s...${quotaMsg}`, "warning");
                     await sleepWithinBudget(silentWaitBudget, SWITCH_ACCOUNT_DELAY_MS, "switching to another account", pushDebug, abortSignal);
@@ -2682,9 +2683,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     };
 
                     const label = account.email || `Account ${account.index + 1}`;
-                    const resetSuffix = bodyInfo.quotaResetTime
-                      ? ` Quota resets at ${bodyInfo.quotaResetTime}.`
-                      : "";
+                    const resetSuffix = formatQuotaResetSuffix(bodyInfo.quotaResetTime);
                     if (accountManager.shouldShowAccountToast(account.index, 60000)) {
                       await showToast(
                         `${label}: ${quotaName} quota exhausted.${resetSuffix} ${accountCount > 1 ? "Switching account..." : "Waiting for the quota to reset..."}`,
@@ -3252,17 +3251,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       if (!resetTime) return '';
                       const ms = Date.parse(resetTime) - Date.now();
                       if (ms <= 0) return ' (resetting...)';
-                      
-                      const hours = ms / (1000 * 60 * 60);
-                      if (hours >= 24) {
-                        const days = Math.floor(hours / 24);
-                        const remainingHours = Math.floor(hours % 24);
-                        if (remainingHours > 0) {
-                          return ` (resets in ${days}d ${remainingHours}h)`;
-                        }
-                        return ` (resets in ${days}d)`;
-                      }
-                      return ` (resets in ${formatWaitTime(ms)})`;
+                      return ` (resets ${formatResetStamp(resetTime)})`;
                     };
 
                     // Display Gemini CLI Quota first (as requested - swap order)
