@@ -1999,6 +1999,68 @@ describe("AccountManager", () => {
 
       expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
     });
+
+    it("clears an argon marker when the argon bucket has quota", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1",
+            addedAt: 1,
+            lastUsed: 0,
+            rateLimitResetTimes: { "gemini-antigravity:gemini-4-argon-high": 10_000_000 },
+            cachedQuota: {
+              "gemini-argon": {
+                remainingFraction: 1,
+                modelCount: 1,
+                models: { "gemini-4-argon-high": { remainingFraction: 1 } },
+              },
+            },
+            cachedQuotaUpdatedAt: Date.now(),
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
+    });
+
+    it("does not let the argon bucket vouch for shared Gemini markers", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1",
+            addedAt: 1,
+            lastUsed: 0,
+            rateLimitResetTimes: {
+              "gemini-antigravity:gemini-3.8-flash-high": 10_000_000,
+              "gemini-antigravity": 10_000_000,
+            },
+            cachedQuota: {
+              "gemini-argon": {
+                remainingFraction: 1,
+                modelCount: 1,
+                models: { "gemini-4-argon-high": { remainingFraction: 1 } },
+              },
+            },
+            cachedQuotaUpdatedAt: Date.now(),
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({
+        "gemini-antigravity:gemini-3.8-flash-high": 10_000_000,
+        "gemini-antigravity": 10_000_000,
+      });
+    });
   });
 
   describe("getMinWaitTimeForSoftQuota", () => {
@@ -2201,6 +2263,11 @@ describe("resolveQuotaGroup", () => {
     expect(resolveQuotaGroup("claude", "claude-opus-4-6-thinking")).toBe("claude");
     expect(resolveQuotaGroup("gemini", "gemini-2.5-pro")).toBe("gemini-pro");
     expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
+    // Gemini 4 Argon draws from its own weekly-only bucket.
+    expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini-argon");
+    expect(resolveQuotaGroup("gemini", "antigravity-gemini-4-argon")).toBe("gemini-argon");
+    // Claude keeps its own branch even if the id mentions argon.
+    expect(resolveQuotaGroup("claude", "claude-argon-x")).toBe("claude");
   });
 
   it("falls back to claude for claude family when no model", () => {

@@ -79,7 +79,10 @@ describe("checkAccountsQuota", () => {
     expect(result?.status).toBe("ok")
     expect(result?.quota?.groups.claude?.remainingFraction).toBe(0.5)
     expect(result?.quota?.groups["gemini-flash"]?.remainingFraction).toBe(0.25)
-    expect(result?.quota?.groups["gemini-pro"]?.remainingFraction).toBe(0.75)
+    // Gemini 4 Argon has its own weekly-only bucket, so it never merges into
+    // the shared Gemini pool.
+    expect(result?.quota?.groups["gemini-argon"]?.remainingFraction).toBe(0.75)
+    expect(result?.quota?.groups["gemini-pro"]).toBeUndefined()
     expect(result?.quota?.models?.["gemini-4-argon-high"]?.maxTokens).toBe(1048576)
 
     const modelsCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/v1internal:fetchAvailableModels"))
@@ -168,5 +171,21 @@ describe("aggregateQuota per-model entries", () => {
     expect(pro?.remainingFraction).toBeUndefined();
     expect(pro?.models?.["gemini-3.8-pro"]?.remainingFraction).toBeUndefined();
     expect(summary.groups["gemini-flash"]?.models?.["gemini-3.8-flash"]?.remainingFraction).toBe(0.4);
+  });
+
+  it("keeps gemini-4-argon in its own weekly-only group", () => {
+    const models = {
+      "gemini-4-argon-high": { quotaInfo: { remainingFraction: 0.25, resetTime: "2030-01-05T00:00:00Z" } },
+      "gemini-3-pro": { quotaInfo: { remainingFraction: 0.9 } },
+    } as Parameters<typeof aggregateQuota>[0];
+
+    const summary = aggregateQuota(models);
+
+    const argon = summary.groups["gemini-argon"];
+    expect(argon?.remainingFraction).toBe(0.25);
+    expect(argon?.models?.["gemini-4-argon-high"]?.resetTime).toBe("2030-01-05T00:00:00Z");
+    // The shared Gemini pool must not inherit argon's exhausted-looking minimum.
+    expect(summary.groups["gemini-pro"]?.remainingFraction).toBe(0.9);
+    expect(summary.groups["gemini-pro"]?.models?.["gemini-4-argon-high"]).toBeUndefined();
   });
 });

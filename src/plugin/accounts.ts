@@ -4,7 +4,7 @@ import type { OAuthAuthDetails, RefreshParts } from "./types";
 import type { AccountSelectionStrategy } from "./config/schema";
 import { getHealthTracker, getTokenTracker, selectHybridAccount, type AccountWithMetrics } from "./rotation";
 import { generateFingerprint, updateFingerprintVersion, type Fingerprint, type FingerprintVersion, MAX_FINGERPRINT_HISTORY } from "./fingerprint";
-import type { QuotaGroup, QuotaGroupSummary, QuotaModelSummary } from "./quota";
+import { isArgonModelName, type QuotaGroup, type QuotaGroupSummary, type QuotaModelSummary } from "./quota";
 import { getModelFamily } from "./transform/model-resolver";
 import { debugLogToFile } from "./debug";
 import { formatAccountLabel, formatWaitTime } from "./logging-utils";
@@ -349,7 +349,18 @@ function modelForQuotaKey(key: QuotaKey): string | null {
  */
 export function resolveQuotaGroup(family: ModelFamily, model?: string | null): QuotaGroup {
   if (model) {
-    return getModelFamily(model);
+    // Claude keeps its own branch first (mirroring classifyQuotaGroup), so an
+    // unusual claude id can never be read against the argon bucket.
+    const modelFamily = getModelFamily(model);
+    if (modelFamily === "claude") {
+      return "claude";
+    }
+    // Gemini 4 Argon has its own weekly-only bucket, separate from the shared
+    // Gemini pool, so its quota reads must not fall through to gemini-pro.
+    if (isArgonModelName(model)) {
+      return "gemini-argon";
+    }
+    return modelFamily;
   }
   return family === "claude" ? "claude" : "gemini-pro";
 }
@@ -1738,9 +1749,11 @@ export class AccountManager {
     quotaGroups: Partial<Record<QuotaGroup, QuotaGroupSummary>>,
   ): boolean {
     const claudeAvailable = groupHasAvailableQuota(quotaGroups.claude);
-    const geminiAvailable =
+    const sharedGeminiAvailable =
       groupHasAvailableQuota(quotaGroups["gemini-pro"]) ||
       groupHasAvailableQuota(quotaGroups["gemini-flash"]);
+    const argonAvailable = groupHasAvailableQuota(quotaGroups["gemini-argon"]);
+    const geminiAvailable = sharedGeminiAvailable || argonAvailable;
     if (!claudeAvailable && !geminiAvailable) {
       return false;
     }
@@ -1753,10 +1766,16 @@ export class AccountManager {
 
       const model = modelForQuotaKey(key);
       if (model) {
-        const quotaGroup = getModelFamily(model);
+        // Argon-aware: a marker for an argon model is vouched for by the argon
+        // bucket, not by the shared Gemini pool.
+        const quotaGroup = resolveQuotaGroup(family, model);
         if (quotaGroup === "claude" ? !claudeAvailable : !modelHasAvailableQuota(quotaGroups[quotaGroup], model)) {
           continue;
         }
+      } else if (family !== "claude" && !sharedGeminiAvailable) {
+        // A base family key covers the shared Gemini pool only, so argon quota
+        // cannot vouch for it.
+        continue;
       }
 
       const resetTime = account.rateLimitResetTimes[key];

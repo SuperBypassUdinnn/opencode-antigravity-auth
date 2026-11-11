@@ -23,7 +23,7 @@ const FETCH_TIMEOUT_MS = 10000;
  */
 const SWEEP_BUDGET_MS = 20000;
 
-export type QuotaGroup = "claude" | "gemini-pro" | "gemini-flash";
+export type QuotaGroup = "claude" | "gemini-pro" | "gemini-flash" | "gemini-argon";
 
 export interface QuotaModelSummary {
   remainingFraction?: number;
@@ -139,6 +139,16 @@ function parseResetTime(resetTime?: string): number | null {
   return timestamp;
 }
 
+/**
+ * Gemini 4 Argon draws from its own weekly-only bucket, separate from the
+ * shared Gemini pool (see Google's account dashboard), so its quota must not be
+ * min-merged into the pro or flash groups. Model names and display names are
+ * both checked, and callers must keep the claude branch ahead of this one.
+ */
+export function isArgonModelName(value: string): boolean {
+  return value.toLowerCase().includes("argon");
+}
+
 function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup | null {
   const combined = `${modelName} ${displayName ?? ""}`.toLowerCase();
   if (combined.includes("claude")) {
@@ -146,6 +156,9 @@ function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup
   }
   if (!combined.includes("gemini")) {
     return null;
+  }
+  if (isArgonModelName(combined)) {
+    return "gemini-argon";
   }
   const family = getModelFamily(modelName);
   return family === "gemini-flash" ? "gemini-flash" : "gemini-pro";
