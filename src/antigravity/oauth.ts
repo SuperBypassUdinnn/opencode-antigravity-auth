@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { generatePKCE } from "@openauthjs/openauth/pkce";
 
 import {
@@ -61,21 +62,53 @@ interface AntigravityUserInfo {
   email?: string;
 }
 
+/** In-memory cache for pending PKCE verifiers to avoid sending them in public URL state. */
+const verifierMemoryStore = new Map<string, { verifier: string; projectId: string; expiresAt: number }>();
+const VERIFIER_TTL_MS = 10 * 60 * 1000;
+
+function cleanupExpiredVerifiers(): void {
+  const now = Date.now();
+  for (const [key, val] of verifierMemoryStore.entries()) {
+    if (val.expiresAt < now) verifierMemoryStore.delete(key);
+  }
+}
+
 /**
  * Encode an object into a URL-safe base64 string.
  */
 function encodeState(payload: AntigravityAuthState): string {
-  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  cleanupExpiredVerifiers();
+  const token = randomUUID();
+  verifierMemoryStore.set(token, {
+    verifier: payload.verifier,
+    projectId: payload.projectId || "",
+    expiresAt: Date.now() + VERIFIER_TTL_MS,
+  });
+  // State payload sent over URL contains only the token and optional projectId, not the verifier
+  return Buffer.from(JSON.stringify({ token, projectId: payload.projectId || "" }), "utf8").toString("base64url");
 }
 
 /**
  * Decode an OAuth state parameter back into its structured representation.
+ * Supports in-memory verifier retrieval with fallback to legacy JSON verifier in state.
  */
 function decodeState(state: string): AntigravityAuthState {
   const normalized = state.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), "=");
   const json = Buffer.from(padded, "base64").toString("utf8");
   const parsed = JSON.parse(json);
+
+  // If token is present, resolve verifier from in-memory store
+  if (typeof parsed.token === "string" && verifierMemoryStore.has(parsed.token)) {
+    const stored = verifierMemoryStore.get(parsed.token)!;
+    verifierMemoryStore.delete(parsed.token);
+    return {
+      verifier: stored.verifier,
+      projectId: typeof parsed.projectId === "string" ? parsed.projectId : stored.projectId,
+    };
+  }
+
+  // Legacy fallback: verifier was encoded directly in state
   if (typeof parsed.verifier !== "string") {
     throw new Error("Missing PKCE verifier in state");
   }

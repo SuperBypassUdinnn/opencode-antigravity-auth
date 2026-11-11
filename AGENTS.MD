@@ -82,6 +82,7 @@ No linter or formatter is configured. Style is enforced by convention (see below
 
 ```
 src/
+├── v2.ts                    # OpenCode V2 plugin registration & lifecycle
 ├── plugin.ts                # Main entry, fetch interceptor
 ├── constants.ts             # Endpoints, headers, API config, system prompts
 ├── antigravity/oauth.ts     # OAuth token exchange
@@ -94,6 +95,9 @@ src/
     ├── quota.ts             # Quota checking (API usage stats)
     ├── cache.ts             # Auth & signature caching
     ├── accounts.ts          # Multi-account management & storage
+    ├── rotation.ts          # Account rotation & error parsing
+    ├── stall-guard.ts       # Network header & stream body idle timers
+    ├── discovery-gate.ts    # Concurrency gate for model discovery
     ├── storage.ts           # Persistent storage schemas (Zod)
     ├── fingerprint.ts       # Device fingerprint generation & headers
     ├── project.ts           # Managed project context resolution

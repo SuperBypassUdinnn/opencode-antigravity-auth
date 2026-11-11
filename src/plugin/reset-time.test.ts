@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { formatResetStamp } from "./reset-time"
+import { formatResetStamp, formatTwoTierQuotaReport } from "./reset-time"
 
 const now = new Date("2026-11-11T03:00:00Z").getTime()
 
@@ -41,5 +41,22 @@ describe("formatResetStamp", () => {
 
   it("passes unparsable input through unchanged", () => {
     expect(formatResetStamp("not-a-date", { now })).toBe("not-a-date")
+  })
+})
+
+describe("formatTwoTierQuotaReport", () => {
+  it("renders both 5h and 1w with remaining fractions and countdowns", () => {
+    const shortQuota = { remainingFraction: 0.62, resetTime: "2026-11-11T05:30:00Z" }
+    const weeklyQuota = { remainingFraction: 0.88, resetTime: "2026-11-18T09:42:00Z" }
+    expect(
+      formatTwoTierQuotaReport(shortQuota, weeklyQuota, { now, timeZone: "Asia/Jakarta" }),
+    ).toBe("5h: 62% (resets 11 Nov 12:30, in 2h 30m) | 1w: 88% (resets 18 Nov 16:42, in 7d 6h)")
+  })
+
+  it("renders only 5h when weekly is not provided", () => {
+    const shortQuota = { remainingFraction: 0.5, resetTime: "2026-11-11T05:30:00Z" }
+    expect(
+      formatTwoTierQuotaReport(shortQuota, undefined, { now, timeZone: "Asia/Jakarta" }),
+    ).toBe("5h: 50% (resets 11 Nov 12:30, in 2h 30m)")
   })
 })

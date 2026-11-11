@@ -205,7 +205,7 @@ export interface AccountMetadataV3 {
   verificationUrl?: string;
   /** Cached soft quota data. `models` mirrors QuotaGroupSummary.models from
    * ./quota: per-model remaining quota used by account selection. */
-  cachedQuota?: Record<string, { remainingFraction?: number; resetTime?: string; modelCount: number; models?: Record<string, { remainingFraction?: number; resetTime?: string }> }>;
+  cachedQuota?: Record<string, { remainingFraction?: number; resetTime?: string; weeklyRemainingFraction?: number; weeklyResetTime?: string; modelCount: number; models?: Record<string, { remainingFraction?: number; resetTime?: string }> }>;
   cachedQuotaUpdatedAt?: number;
   /** Deterministic product-license rejection bench per family (SUBSCRIPTION_REQUIRED). */
   licenseBlockedUntil?: { claude?: number; gemini?: number };

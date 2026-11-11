@@ -2,9 +2,9 @@ import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import { AntigravityAccountsRpc, type AccountSummary } from "./account-rpc.ts"
 import { parseRefreshParts } from "./auth.ts"
-import { checkAccountsQuota } from "./quota.ts"
+import { checkAccountsQuota, isProQuotaGroup } from "./quota.ts"
 import { accountTokenHash, loadAccounts, matchesAccountToken, saveAccountCredentials, updateAccountCredentials, updateAccounts, type AccountMetadataV3 } from "./storage.ts"
-import { formatResetStamp } from "./reset-time.ts"
+import { formatResetStamp, formatTwoTierQuotaReport } from "./reset-time.ts"
 import type { PluginClient } from "./types.ts"
 
 export const accountID = (account: Pick<AccountMetadataV3, "id" | "refreshToken">) => account.id ?? accountTokenHash(account.refreshToken)
@@ -85,9 +85,24 @@ export async function registerAccountManagement(
           lines.push(`${original.email ?? `Account ${result.index + 1}`}${result.disabled ? " [disabled]" : ""}`)
           if (result.status === "disabled") { lines.push("  Skipped (disabled)", ""); finish(); continue }
           if (result.error) { lines.push(`  ${result.error}`, ""); finish(); continue }
-          for (const [group, quota] of Object.entries(result.quota?.groups ?? {})) {
-            const percent = quota.remainingFraction === undefined ? "unknown" : `${Math.round(quota.remainingFraction * 100)}% remaining`
-            lines.push(`  Antigravity ${group}: ${percent}${quota.resetTime ? `; resets ${formatResetStamp(quota.resetTime)}` : ""}`)
+          const groups = result.quota?.groups ?? {}
+          const isProAccount = isProQuotaGroup(groups)
+
+          for (const [group, quota] of Object.entries(groups)) {
+            if (group === "gemini-pro") continue
+            if (isProAccount && (group === "claude" || group === "gemini-flash")) {
+              const weeklyData = quota.weeklyRemainingFraction !== undefined || quota.weeklyResetTime
+                ? { remainingFraction: quota.weeklyRemainingFraction, resetTime: quota.weeklyResetTime }
+                : groups["gemini-argon"]
+                  ? { remainingFraction: undefined, resetTime: groups["gemini-argon"].resetTime }
+                  : undefined
+              const report = formatTwoTierQuotaReport(quota, weeklyData)
+              lines.push(`  Antigravity ${group}: ${report}`)
+            } else {
+              const percent = quota.remainingFraction === undefined ? "unknown" : `${Math.round(quota.remainingFraction * 100)}% remaining`
+              const resetPart = quota.resetTime ? `; resets ${formatResetStamp(quota.resetTime)}` : ""
+              lines.push(`  Antigravity ${group}: ${percent}${resetPart}`)
+            }
           }
           if (result.quota?.error) lines.push(`  Antigravity: ${result.quota.error}`)
           for (const quota of result.geminiCliQuota?.models ?? []) {

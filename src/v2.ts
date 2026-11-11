@@ -224,7 +224,12 @@ export const AntigravityV2Plugin = Plugin.define({
       for (const catalog of accountCatalogs) {
         for (const id of Object.keys(catalog.models)) {
           const key = keyMap.get(id)
-          if (key) (eligibleAccounts[key] ??= []).push(catalog.account)
+          if (key) {
+            const list = (eligibleAccounts[key] ??= [])
+            if (!list.includes(catalog.account)) {
+              list.push(catalog.account)
+            }
+          }
         }
       }
       const previousSignature = catalogSignature(modelDefinitions)
@@ -576,7 +581,7 @@ export const AntigravityV2Plugin = Plugin.define({
               if (answer.manual !== false) {
                 return { url: auth.url, instructions: "Open this URL, then paste the authorization code or full callback URL.", mode: "code", callback: complete }
               }
-              const listener = await startOAuthListener()
+              const listener = await startOAuthListener({ expectedState: state })
               listeners.add(listener)
               const callback = listener.waitForCallback()
                 .then((url) => complete(url.toString()))

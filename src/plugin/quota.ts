@@ -6,7 +6,7 @@ import {
   ANTIGRAVITY_PROVIDER_ID,
 } from "../constants";
 import { accessTokenExpired, formatRefreshParts, parseRefreshParts } from "./auth";
-import { logQuotaFetch, logQuotaStatus } from "./debug";
+import { logQuotaFetch, logQuotaStatus, debugLogToFile } from "./debug";
 import { ensureProjectContext } from "./project";
 import { refreshAccessToken } from "./token";
 import { getModelFamily } from "./transform/model-resolver";
@@ -33,11 +33,22 @@ export interface QuotaModelSummary {
 export interface QuotaGroupSummary {
   remainingFraction?: number;
   resetTime?: string;
+  weeklyRemainingFraction?: number;
+  weeklyResetTime?: string;
   modelCount: number;
   /** Remaining quota per model when the backend reports quotaInfo per model.
    * Account selection prefers the requested model's own entry over the group
    * minimum, so one depleted model no longer blocks the whole group. */
   models?: Record<string, QuotaModelSummary>;
+}
+
+/** Check if quota groups indicate a Pro-tier account (Argon weekly bucket or 5.5 model series). */
+export function isProQuotaGroup(groups?: Partial<Record<QuotaGroup, QuotaGroupSummary>> | null): boolean {
+  if (!groups) return false;
+  if (groups["gemini-argon"]) return true;
+  return Object.values(groups).some(g =>
+    Object.keys(g?.models ?? {}).some(m => m.includes("5-5") || m.includes("argon")),
+  );
 }
 
 export interface QuotaSummary {
@@ -282,6 +293,51 @@ async function fetchAvailableModels(
   throw new Error(errors.join("; ") || "fetchAvailableModels failed");
 }
 
+interface RetrieveUserQuotaSummaryResponse {
+  groups?: {
+    displayName?: string;
+    description?: string;
+    buckets?: {
+      bucketId?: string;
+      displayName?: string;
+      window?: string;
+      resetTime?: string;
+      description?: string;
+      remainingFraction?: number;
+    }[];
+  }[];
+}
+
+async function fetchUserQuotaSummary(
+  accessToken: string,
+  projectId: string,
+): Promise<RetrieveUserQuotaSummaryResponse | undefined> {
+  const endpoint = ANTIGRAVITY_ENDPOINT;
+  const quotaUserAgent = getAntigravityUserAgent();
+  const body = projectId ? { project: projectId } : {};
+
+  try {
+    const response = await fetchWithTimeout(`${endpoint}/v1internal:retrieveUserQuotaSummary`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": quotaUserAgent,
+        "X-Opencode-Client": "cli",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      return (await response.json()) as RetrieveUserQuotaSummaryResponse;
+    }
+    return undefined;
+  } catch (error: unknown) {
+    debugLogToFile(`[Quota] fetchUserQuotaSummary failed: ${String(error)}`);
+    return undefined;
+  }
+}
+
 async function fetchGeminiCliQuota(
   accessToken: string,
   projectId: string,
@@ -373,116 +429,164 @@ export async function checkAccountsQuota(
     includeDisabled?: boolean;
     onAccountUpdated?: (original: AccountMetadataV3, updated: AccountMetadataV3) => Promise<unknown>;
     signal?: AbortSignal;
+    concurrency?: number;
   } = {},
 ): Promise<AccountQuotaResult[]> {
-  const results: AccountQuotaResult[] = [];
-  
   logQuotaFetch("start", accounts.length);
 
   const sweepDeadline = Date.now() + SWEEP_BUDGET_MS;
+  const CONCURRENCY = Math.max(1, Math.min(options.concurrency ?? 4, accounts.length));
+  const results: AccountQuotaResult[] = new Array(accounts.length);
+  let nextAccountIndex = 0;
 
-  for (const [index, account] of accounts.entries()) {
-    const disabled = account.enabled === false;
-    if (disabled && options.includeDisabled !== true) {
-      results.push({ index, email: account.email, status: "disabled", disabled: true });
-      continue;
-    }
+  async function worker() {
+    while (true) {
+      if (options.signal?.aborted) break;
+      const currentIndex = nextAccountIndex++;
+      if (currentIndex >= accounts.length) break;
 
-    if (Date.now() > sweepDeadline) {
-      results.push({
-        index,
-        email: account.email,
-        status: "error",
-        disabled,
-        error: `Quota sweep budget of ${SWEEP_BUDGET_MS} ms exceeded; account not checked`,
-      });
-      continue;
-    }
-
-    let auth = buildAuthFromAccount(account);
-    let updatedAccount: AccountMetadataV3 | undefined;
-
-    try {
-      options.signal?.throwIfAborted();
-      if (accessTokenExpired(auth)) {
-        const refreshed = await refreshAccessToken(auth, client, providerId);
-        if (!refreshed) {
-          throw new Error("Token refresh failed");
-        }
-        auth = refreshed;
+      const account = accounts[currentIndex]!;
+      const disabled = account.enabled === false;
+      if (disabled && options.includeDisabled !== true) {
+        results[currentIndex] = { index: currentIndex, email: account.email, status: "disabled", disabled: true };
+        continue;
       }
 
-      updatedAccount = applyAccountUpdates(account, auth);
-      if (updatedAccount) await options.onAccountUpdated?.(account, updatedAccount);
-      options.signal?.throwIfAborted();
-      const beforeProject = updatedAccount ?? account;
-      const projectContext = await ensureProjectContext(auth);
-      auth = projectContext.auth;
-      updatedAccount = applyAccountUpdates(account, auth);
-      const projectUpdates = applyAccountUpdates(beforeProject, auth);
-      if (projectUpdates) await options.onAccountUpdated?.(beforeProject, projectUpdates);
-      options.signal?.throwIfAborted();
-
-      let quotaResult: QuotaSummary;
-      let geminiCliQuotaResult: GeminiCliQuotaSummary;
-      
-      // Fetch both Antigravity and Gemini CLI quotas in parallel
-      const [antigravityResponse, geminiCliResponse] = await Promise.all([
-        fetchAvailableModels(auth.access ?? "", projectContext.effectiveProjectId)
-          .catch((error): FetchAvailableModelsResponse => ({ models: undefined })),
-        fetchGeminiCliQuota(auth.access ?? "", projectContext.effectiveProjectId),
-      ]);
-
-      // Process Antigravity quota
-      if (antigravityResponse.models === undefined) {
-        quotaResult = {
-          groups: {},
-          modelCount: 0,
-          error: "Failed to fetch Antigravity quota",
+      if (Date.now() > sweepDeadline) {
+        results[currentIndex] = {
+          index: currentIndex,
+          email: account.email,
+          status: "error",
+          disabled,
+          error: `Quota sweep budget of ${SWEEP_BUDGET_MS} ms exceeded; account not checked`,
         };
-      } else {
-        const visible = (antigravityResponse.agentModelSorts ?? []).flatMap(sort => (sort.groups ?? []).flatMap(group => group.modelIds ?? []));
-        // The backend also exposes obsolete aliases, completion models, and
-        // routing IDs. Prefer the same selectable inventory as Antigravity.
-        const selectable = visible.length ? new Set([...visible, ...Object.values(antigravityResponse.tieredModelIds ?? {}).flat()]) : undefined;
-        quotaResult = aggregateQuota(antigravityResponse.models, selectable);
+        continue;
       }
 
-      // Process Gemini CLI quota
-      geminiCliQuotaResult = aggregateGeminiCliQuota(geminiCliResponse);
-      if (geminiCliResponse.buckets === undefined || geminiCliResponse.buckets.length === 0) {
-        geminiCliQuotaResult.error = geminiCliQuotaResult.models.length === 0 
-          ? "No Gemini CLI quota available" 
-          : undefined;
-      }
+      let auth = buildAuthFromAccount(account);
+      let updatedAccount: AccountMetadataV3 | undefined;
 
-      results.push({
-        index,
-        email: account.email,
-        status: "ok",
-        disabled,
-        quota: quotaResult,
-        geminiCliQuota: geminiCliQuotaResult,
-        updatedAccount,
-      });
-      
-      // Log quota status for each family
-      for (const [family, groupQuota] of Object.entries(quotaResult.groups)) {
-        const remainingPercent = (groupQuota.remainingFraction ?? 0) * 100;
-        logQuotaStatus(account.email, index, remainingPercent, family);
+      try {
+        if (options.signal?.aborted) throw options.signal.reason;
+        if (accessTokenExpired(auth)) {
+          const refreshed = await refreshAccessToken(auth, client, providerId);
+          if (!refreshed) {
+            throw new Error("Token refresh failed");
+          }
+          auth = refreshed;
+        }
+
+        updatedAccount = applyAccountUpdates(account, auth);
+        if (updatedAccount) await options.onAccountUpdated?.(account, updatedAccount);
+        if (options.signal?.aborted) throw options.signal.reason;
+        const beforeProject = updatedAccount ?? account;
+        const projectContext = await ensureProjectContext(auth);
+        auth = projectContext.auth;
+        updatedAccount = applyAccountUpdates(account, auth);
+        const projectUpdates = applyAccountUpdates(beforeProject, auth);
+        if (projectUpdates) await options.onAccountUpdated?.(beforeProject, projectUpdates);
+        if (options.signal?.aborted) throw options.signal.reason;
+
+        let quotaResult: QuotaSummary;
+        let geminiCliQuotaResult: GeminiCliQuotaSummary;
+        
+        // Fetch Antigravity models, Gemini CLI quotas, and user quota summary in parallel
+        const [antigravityResponse, geminiCliResponse, userQuotaSummary] = await Promise.all([
+          fetchAvailableModels(auth.access ?? "", projectContext.effectiveProjectId)
+            .catch((error): FetchAvailableModelsResponse => ({ models: undefined })),
+          fetchGeminiCliQuota(auth.access ?? "", projectContext.effectiveProjectId),
+          fetchUserQuotaSummary(auth.access ?? "", projectContext.effectiveProjectId),
+        ]);
+
+        // Process Antigravity quota
+        if (antigravityResponse.models === undefined) {
+          quotaResult = {
+            groups: {},
+            modelCount: 0,
+            error: "Failed to fetch Antigravity quota",
+          };
+        } else {
+          const visible = (antigravityResponse.agentModelSorts ?? []).flatMap(sort => (sort.groups ?? []).flatMap(group => group.modelIds ?? []));
+          // The backend also exposes obsolete aliases, completion models, and
+          // routing IDs. Prefer the same selectable inventory as Antigravity.
+          const selectable = visible.length ? new Set([...visible, ...Object.values(antigravityResponse.tieredModelIds ?? {}).flat()]) : undefined;
+          quotaResult = aggregateQuota(antigravityResponse.models, selectable);
+
+          // Merge accurate multi-tier (5h vs weekly) windows from retrieveUserQuotaSummary
+          if (userQuotaSummary?.groups) {
+            for (const group of userQuotaSummary.groups) {
+              const displayName = (group.displayName ?? "").toLowerCase();
+              let targetKey: QuotaGroup | undefined;
+              if (displayName.includes("claude") || displayName.includes("gpt")) {
+                targetKey = "claude";
+              } else if (displayName.includes("gemini 4 argon") || displayName.includes("argon")) {
+                targetKey = "gemini-argon";
+              } else if (displayName.includes("gemini")) {
+                targetKey = "gemini-flash";
+              }
+
+              if (targetKey && quotaResult.groups[targetKey]) {
+                const targetGroup = quotaResult.groups[targetKey]!;
+                for (const bucket of group.buckets ?? []) {
+                  if (bucket.window === "5h" || (bucket.displayName ?? "").toLowerCase().includes("five hour")) {
+                    if (bucket.remainingFraction !== undefined) {
+                      targetGroup.remainingFraction = normalizeRemainingFraction(bucket.remainingFraction);
+                    }
+                    if (bucket.resetTime) {
+                      targetGroup.resetTime = bucket.resetTime;
+                    }
+                  } else if (bucket.window === "weekly" || (bucket.displayName ?? "").toLowerCase().includes("weekly")) {
+                    if (bucket.remainingFraction !== undefined) {
+                      targetGroup.weeklyRemainingFraction = normalizeRemainingFraction(bucket.remainingFraction);
+                    }
+                    if (bucket.resetTime) {
+                      targetGroup.weeklyResetTime = bucket.resetTime;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Process Gemini CLI quota
+        geminiCliQuotaResult = aggregateGeminiCliQuota(geminiCliResponse);
+        if (geminiCliResponse.buckets === undefined || geminiCliResponse.buckets.length === 0) {
+          geminiCliQuotaResult.error = geminiCliQuotaResult.models.length === 0 
+            ? "No Gemini CLI quota available" 
+            : undefined;
+        }
+
+        results[currentIndex] = {
+          index: currentIndex,
+          email: account.email,
+          status: "ok",
+          disabled,
+          quota: quotaResult,
+          geminiCliQuota: geminiCliQuotaResult,
+          updatedAccount,
+        };
+        
+        // Log quota status for each family
+        for (const [family, groupQuota] of Object.entries(quotaResult.groups)) {
+          const remainingPercent = (groupQuota.remainingFraction ?? 0) * 100;
+          logQuotaStatus(account.email, currentIndex, remainingPercent, family);
+        }
+      } catch (error) {
+        results[currentIndex] = {
+          index: currentIndex,
+          email: account.email,
+          status: "error",
+          updatedAccount,
+          disabled,
+          error: error instanceof Error ? error.message : String(error),
+        };
+        logQuotaFetch("error", undefined, `account=${account.email ?? currentIndex} error=${error instanceof Error ? error.message : String(error)}`);
       }
-    } catch (error) {
-      results.push({
-        index,
-        email: account.email,
-        status: "error",
-        updatedAccount,
-        disabled,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      logQuotaFetch("error", undefined, `account=${account.email ?? index} error=${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
   logQuotaFetch("complete", accounts.length, `ok=${results.filter(r => r.status === "ok").length} errors=${results.filter(r => r.status === "error").length}`);
   return results;

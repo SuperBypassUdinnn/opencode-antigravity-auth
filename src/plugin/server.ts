@@ -3,11 +3,12 @@ import { readFileSync, existsSync } from "node:fs";
 
 import { ANTIGRAVITY_REDIRECT_URI } from "../constants";
 
-interface OAuthListenerOptions {
+export interface OAuthListenerOptions {
   /**
    * How long to wait for the OAuth redirect before timing out (in milliseconds).
    */
   timeoutMs?: number;
+  expectedState?: string;
 }
 
 export interface OAuthListener {
@@ -106,30 +107,15 @@ function isRemoteEnvironment(): boolean {
 /**
  * Determine the best bind address for the OAuth callback server.
  * 
- * Priority:
- * 1. OPENCODE_ANTIGRAVITY_OAUTH_BIND environment variable (user override)
- * 2. OrbStack Docker with --network host: 127.0.0.1 (required for port forwarding)
- * 3. WSL/SSH/Remote: 0.0.0.0 (needed for cross-network access)
- * 4. Default: 127.0.0.1 (most secure for local development)
+ * Default is 127.0.0.1 for local security. Binding to 0.0.0.0 exposes
+ * the callback server to the entire local network, which is only safe
+ * when explicitly opted into via OPENCODE_ANTIGRAVITY_OAUTH_BIND.
  */
 function getBindAddress(): string {
-  // Allow user override via environment variable
   const envBind = process.env.OPENCODE_ANTIGRAVITY_OAUTH_BIND;
   if (envBind) {
     return envBind;
   }
-  
-  // OrbStack Docker needs 127.0.0.1 for --network host port forwarding
-  if (isOrbStackDockerHost()) {
-    return "127.0.0.1";
-  }
-  
-  // WSL and remote environments need 0.0.0.0 to be reachable
-  if (isWSL() || isRemoteEnvironment()) {
-    return "0.0.0.0";
-  }
-  
-  // Default to 127.0.0.1 for security (local-only access)
   return "127.0.0.1";
 }
 
@@ -138,7 +124,7 @@ function getBindAddress(): string {
  * and resolves with the captured callback URL.
  */
 export async function startOAuthListener(
-  { timeoutMs = 5 * 60 * 1000 }: OAuthListenerOptions = {},
+  { timeoutMs = 5 * 60 * 1000, expectedState }: OAuthListenerOptions = {},
 ): Promise<OAuthListener> {
   const port = redirectUri.port
     ? Number.parseInt(redirectUri.port, 10)
@@ -308,6 +294,12 @@ const successResponse = `<!DOCTYPE html>
     if (url.pathname !== callbackPath) {
       response.writeHead(404, { "Content-Type": "text/plain" });
       response.end("Not found");
+      return;
+    }
+
+    if (expectedState && url.searchParams.get("state") !== expectedState) {
+      response.writeHead(400, { "Content-Type": "text/plain" });
+      response.end("Invalid state parameter");
       return;
     }
 

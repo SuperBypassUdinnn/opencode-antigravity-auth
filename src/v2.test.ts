@@ -719,6 +719,7 @@ describe("discovery and account eligibility regressions", () => {
       if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: "fresh", ...(discovering ? { refresh_token: "rotated" } : {}), expires_in: 3600 })
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": {} } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const adapter = await host({ connection: false })
@@ -738,6 +739,7 @@ describe("discovery and account eligibility regressions", () => {
       if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: "fresh", ...(checkingQuota ? { refresh_token: "quota-rotated" } : {}), expires_in: 3600 })
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": {} } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const adapter = await host({ connection: false })
@@ -808,6 +810,7 @@ describe("discovery and account eligibility regressions", () => {
         return Response.json({ models: auth.includes("only-high") ? { "gemini-3.8-flash-high": {} } : { "gemini-3-flash": {} } })
       }
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const highAccount = accountID(state.storage!.accounts[1]!)
@@ -1108,6 +1111,7 @@ describe("native connection bindings", () => {
       }
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": {} } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const adapter = await host()
@@ -1144,6 +1148,7 @@ describe("native loader credential identity", () => {
       }
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "claude-sonnet-5-5-high": {} } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const adapter = await host({
@@ -1230,6 +1235,7 @@ describe("final persistent lifecycle audit", () => {
       }
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": {} } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return original(input, init)
     })
     const eligibleIDs = state.storage!.accounts.map(accountID)
@@ -1261,6 +1267,7 @@ describe("independent final quota and selection integration", () => {
       if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: "quota-access", refresh_token: "automatic-quota-rotated", expires_in: 3600 })
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": { quotaInfo: { remainingFraction: 0.8 } } } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return new Response(`data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
     })
     const adapter = await host()
@@ -1338,6 +1345,7 @@ describe("credential operations during adapter replacement", () => {
       }
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": {} } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return original(input, init)
     })
     const adapter = await host({ connection: false })
@@ -1410,6 +1418,7 @@ describe("cleanup during automatic quota refresh", () => {
       }
       if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3-flash": { quotaInfo: { remainingFraction: 0.8 } } } })
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       return original(input, init)
     })
     const adapter = await host()
@@ -1772,6 +1781,7 @@ describe("OAuth completing during an earlier save", () => {
         })
       }
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
+      if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
       await new Promise<void>((resolve, reject) => {
         const signal = (init as RequestInit | undefined)?.signal
         const onAbort = () => reject(new DOMException("aborted", "AbortError"))

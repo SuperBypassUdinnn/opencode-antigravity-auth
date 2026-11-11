@@ -54,3 +54,27 @@ export function formatResetStamp(
 
   return `${stamp}, ${relative}`;
 }
+
+/**
+ * Formats a two-tier display for Pro accounts:
+ * e.g.:
+ * "5h: 62% (resets 11 Nov 20:20, in 2h 10m) | 1w: 88% (resets 18 Nov 15:20, in 6d 21h)"
+ */
+export function formatTwoTierQuotaReport(
+  shortQuota: { remainingFraction?: number; resetTime?: string },
+  weeklyQuota?: { remainingFraction?: number; resetTime?: string },
+  opts?: { now?: number; timeZone?: string },
+): string {
+  const shortPct = shortQuota.remainingFraction === undefined ? "unknown" : `${Math.round(shortQuota.remainingFraction * 100)}%`;
+  const shortStamp = formatResetStamp(shortQuota.resetTime, opts);
+  const shortPart = shortStamp ? `${shortPct} (resets ${shortStamp})` : shortPct;
+
+  if (weeklyQuota && (weeklyQuota.remainingFraction !== undefined || weeklyQuota.resetTime)) {
+    const weeklyPct = weeklyQuota.remainingFraction === undefined ? "unknown" : `${Math.round(weeklyQuota.remainingFraction * 100)}%`;
+    const weeklyStamp = formatResetStamp(weeklyQuota.resetTime, opts);
+    const weeklyPart = weeklyStamp ? `${weeklyPct} (resets ${weeklyStamp})` : weeklyPct;
+    return `5h: ${shortPart} | 1w: ${weeklyPart}`;
+  }
+
+  return `5h: ${shortPart}`;
+}

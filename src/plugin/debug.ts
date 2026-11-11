@@ -1,4 +1,4 @@
-import { createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "node:process";
 import { homedir } from "node:os";
@@ -51,8 +51,13 @@ function getLogsDir(customLogDir?: string): string {
   const logsDir = customLogDir || join(getConfigDir(), "antigravity-logs");
 
   try {
-    mkdirSync(logsDir, { recursive: true });
-  } catch {
+    mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(logsDir, 0o700);
+    } catch (err: unknown) {
+      // Permission adjustment may fail on foreign mounts; keep existing permissions
+    }
+  } catch (error: unknown) {
     // Directory may already exist or we don't have permission
   }
 
@@ -123,7 +128,12 @@ export function createLogWriter(
   }
 
   try {
-    const stream = createWriteStream(filePath, { flags: "a" });
+    const stream = createWriteStream(filePath, { flags: "a", mode: 0o600 });
+    try {
+      chmodSync(filePath, 0o600);
+    } catch (err: unknown) {
+      // Permission adjustment may fail on foreign mounts; keep existing mode
+    }
     stream.on("error", () => {});
     let writtenBytes = 0;
     let truncated = false;

@@ -23,8 +23,12 @@ const fallbackModels: Record<string, OpencodeModelDefinition> = Object.fromEntri
 /** Model bases that must wait for the per-account discovery catalog before they
  * can be used. Before discovery the account pool is unknown, so common fallback
  * models may use any account while pro-tier models wait for the catalog, and a
- * free account never receives them. */
-export const PRE_DISCOVERY_GATED_MODEL_BASES: ReadonlySet<string> = new Set(["gemini-4-argon", "claude-sonnet-5-5", "claude-opus-5-5"])
+ * free account never receives them. Derived dynamically from OPENCODE_MODEL_DEFINITIONS. */
+export const PRE_DISCOVERY_GATED_MODEL_BASES: ReadonlySet<string> = new Set(
+  Object.entries(OPENCODE_MODEL_DEFINITIONS)
+    .filter(([_, def]) => def.proTier === true)
+    .map(([id]) => id.replace(/^antigravity-/i, "").replace(/-thinking$/i, "").toLowerCase()),
+)
 
 /**
  * Strips a leading `antigravity-` prefix (case-insensitive), a trailing
@@ -72,10 +76,11 @@ type CatalogTier = (typeof TIER_ORDER)[number]
 const CATALOG_TIER_SUFFIX = /^(.*)-(minimal|low|medium|high)$/
 const TIER_LABEL = /\s*\((?:minimal|low|medium|high)\)\s*$/i
 
-/** Excludes completion/internal, image-generation, tier routers and disabled entries. */
+/** Excludes completion/internal, image-generation, tier routers, deprecated models, and disabled entries. */
 function isChatModel(id: string, model: AvailableModel): boolean {
   return /^(gemini-|claude-|gpt-oss-)/.test(id)
     && !/image|imagen|-(disabled|tiered)$/.test(id)
+    && id !== "gemini-3.5-flash-lite"
     && !model.disabled
     && model.selectable !== false
 }

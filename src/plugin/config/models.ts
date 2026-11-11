@@ -28,6 +28,7 @@ export interface OpencodeModelDefinition extends ProviderModel {
   limit: ModelLimit;
   modalities: ModelModalities;
   variants?: Record<string, ModelVariant>;
+  proTier?: boolean;
 }
 
 export type OpencodeModelDefinitions = Record<string, OpencodeModelDefinition>;
@@ -98,6 +99,7 @@ export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = {
     name: "Gemini 4 Argon (Antigravity)",
     limit: { context: 1048576, output: 65535 },
     modalities: DEFAULT_MODALITIES,
+    proTier: true,
     variants: {
       low: { thinkingLevel: "low" },
       medium: { thinkingLevel: "medium" },
@@ -108,11 +110,13 @@ export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = {
     name: "Claude Sonnet 5.5 (Antigravity)",
     limit: { context: 200000, output: 64000 },
     modalities: DEFAULT_MODALITIES,
+    proTier: true,
   },
   "antigravity-claude-opus-5-5-thinking": {
     name: "Claude Opus 5.5 Thinking (Antigravity)",
     limit: { context: 200000, output: 64000 },
     modalities: DEFAULT_MODALITIES,
+    proTier: true,
     variants: {
       low: { thinkingConfig: { thinkingBudget: 8192 } },
       max: { thinkingConfig: { thinkingBudget: 32768 } },

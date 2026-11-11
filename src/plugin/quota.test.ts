@@ -128,7 +128,7 @@ describe("checkAccountsQuota", () => {
         { ...account, email: "second@example.com" },
       ]
 
-      const results = await checkAccountsQuota(accounts, {} as PluginClient)
+      const results = await checkAccountsQuota(accounts, {} as PluginClient, undefined, { concurrency: 1 })
 
       expect(results[0]?.status).toBe("ok")
       expect(results[1]).toMatchObject({ index: 1, status: "error" })
@@ -136,6 +136,28 @@ describe("checkAccountsQuota", () => {
     } finally {
       nowMock.mockRestore()
     }
+  })
+
+  it("processes accounts concurrently with default pool", async () => {
+    let running = 0
+    let maxRunning = 0
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      running++
+      if (running > maxRunning) maxRunning = running
+      await new Promise(resolve => setTimeout(resolve, 10))
+      running--
+      return jsonResponse({ models: {} })
+    }))
+
+    const accounts: AccountMetadataV3[] = Array.from({ length: 8 }, (_, i) => ({
+      ...account,
+      email: `user${i}@example.com`,
+    }))
+
+    const results = await checkAccountsQuota(accounts, {} as PluginClient)
+    expect(results).toHaveLength(8)
+    expect(results.every(r => r.status === "ok")).toBe(true)
+    expect(maxRunning).toBeGreaterThanOrEqual(2)
   })
 })
 

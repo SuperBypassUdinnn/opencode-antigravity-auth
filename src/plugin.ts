@@ -49,7 +49,7 @@ import { formatQuotaResetSuffix, formatResetStamp } from "./plugin/reset-time";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
 import { loadConfig, initRuntimeConfig, type AntigravityConfig } from "./plugin/config";
 import { createSessionRecoveryHook, getRecoverySuccessToast } from "./plugin/recovery";
-import { checkAccountsQuota } from "./plugin/quota";
+import { checkAccountsQuota, isProQuotaGroup } from "./plugin/quota";
 import { acquireDiskSignatureCache } from "./plugin/cache";
 import { createProactiveRefreshQueue, type ProactiveRefreshQueue } from "./plugin/refresh-queue";
 import { initLogger, createLogger } from "./plugin/logger";
@@ -3281,18 +3281,30 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       console.log(`     └─ ${errorMsg}`);
                     } else {
                       const groups = res.quota!.groups;
+                      const isProAccount = isProQuotaGroup(groups);
+                      const weeklyResetTime = groups["gemini-argon"]?.resetTime || undefined;
+
                       const groupEntries = [
-                        { name: "Claude", data: groups.claude },
-                        { name: "Gemini 3 Pro", data: groups["gemini-pro"] },
-                        { name: "Gemini 3 Flash", data: groups["gemini-flash"] },
-                        { name: "Gemini 4 Argon", data: groups["gemini-argon"] },
+                        { name: "Claude", groupKey: "claude", data: groups.claude },
+                        { name: "Gemini 3 Flash", groupKey: "gemini-flash", data: groups["gemini-flash"] },
+                        { name: "Gemini 4 Argon", groupKey: "gemini-argon", data: groups["gemini-argon"] },
                       ].filter(g => g.data);
                       
                       groupEntries.forEach((g, idx) => {
                         const isLast = idx === groupEntries.length - 1;
                         const connector = isLast ? "└─" : "├─";
                         const bar = createProgressBar(g.data!.remainingFraction);
-                        const reset = formatReset(g.data!.resetTime);
+                        let reset: string;
+                        if (isProAccount && (g.groupKey === "claude" || g.groupKey === "gemini-flash")) {
+                          const wFraction = g.data!.weeklyRemainingFraction;
+                          const wReset = g.data!.weeklyResetTime || weeklyResetTime;
+                          const shortStamp = formatResetStamp(g.data!.resetTime);
+                          const weeklyStamp = formatResetStamp(wReset);
+                          const wPct = wFraction !== undefined ? ` ${Math.round(wFraction * 100)}%` : " unknown";
+                          reset = ` (5h: in ${shortStamp.split(", in ")[1] || shortStamp} | 1w:${wPct} in ${weeklyStamp.split(", in ")[1] || weeklyStamp})`;
+                        } else {
+                          reset = formatReset(g.data!.resetTime);
+                        }
                         const modelName = g.name.padEnd(29);
                         console.log(`     ${connector} ${modelName} ${bar}${reset}`);
                       });
@@ -3626,7 +3638,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 let listener: OAuthListener | null = null;
                 if (!isHeadless) {
                   try {
-                    listener = await startOAuthListener();
+                    listener = await startOAuthListener({ expectedState: fallbackState });
                   } catch {
                     listener = null;
                   }
@@ -3815,17 +3827,17 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
           const useManualFlow = isHeadless || shouldSkipLocalServer();
 
+          const authorization = await authorizeAntigravity(projectId);
+          const fallbackState = getStateFromAuthorizationUrl(authorization.url);
+
           let listener: OAuthListener | null = null;
           if (!useManualFlow) {
             try {
-              listener = await startOAuthListener();
+              listener = await startOAuthListener({ expectedState: fallbackState });
             } catch {
               listener = null;
             }
           }
-
-          const authorization = await authorizeAntigravity(projectId);
-          const fallbackState = getStateFromAuthorizationUrl(authorization.url);
 
           if (!useManualFlow) {
             const browserOpened = await openBrowser(authorization.url);

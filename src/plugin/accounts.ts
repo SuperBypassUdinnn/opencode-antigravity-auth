@@ -466,6 +466,7 @@ export class AccountManager {
     claude: -1,
     gemini: -1,
   };
+  private currentAccountIndexByModel: Map<string, number> = new Map();
   private sessionOffsetApplied: Record<ModelFamily, boolean> = {
     claude: false,
     gemini: false,
@@ -663,8 +664,11 @@ export class AccountManager {
     return this.accounts.map((a) => ({ ...a, parts: { ...a.parts }, rateLimitResetTimes: { ...a.rateLimitResetTimes } }));
   }
 
-  getCurrentAccountForFamily(family: ModelFamily): ManagedAccount | null {
-    const currentIndex = this.currentAccountIndexByFamily[family];
+  getCurrentAccountForFamily(family: ModelFamily, model?: string | null): ManagedAccount | null {
+    const modelKey = model?.trim();
+    const currentIndex = modelKey && this.currentAccountIndexByModel.has(modelKey)
+      ? this.currentAccountIndexByModel.get(modelKey)!
+      : this.currentAccountIndexByFamily[family];
     if (currentIndex >= 0 && currentIndex < this.accounts.length) {
       const account = this.accounts[currentIndex] ?? null;
       // Only return account if it's enabled - disabled accounts should not be selected
@@ -708,12 +712,19 @@ export class AccountManager {
     eligible: (account: ManagedAccount) => boolean = () => true,
   ): ManagedAccount | null {
     const quotaKey = getQuotaKey(family, headerStyle, model);
+    const modelKey = model?.trim();
+    const setSelection = (selected: ManagedAccount) => {
+      this.currentAccountIndexByFamily[family] = selected.index;
+      if (modelKey) {
+        this.currentAccountIndexByModel.set(modelKey, selected.index);
+      }
+    };
 
     if (strategy === 'round-robin') {
       const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
       if (next) {
         this.markTouchedForQuota(next, quotaKey);
-        this.currentAccountIndexByFamily[family] = next.index;
+        setSelection(next);
       }
       return next;
     }
@@ -741,8 +752,10 @@ export class AccountManager {
           };
         });
 
-      // Get current account index for stickiness
-      const currentIndex = this.currentAccountIndexByFamily[family] ?? null;
+      // Get current account index for stickiness (prefer model-specific cursor if available)
+      const currentIndex = (modelKey && this.currentAccountIndexByModel.has(modelKey))
+        ? this.currentAccountIndexByModel.get(modelKey)!
+        : (this.currentAccountIndexByFamily[family] ?? null);
       
       const selectedIndex = selectHybridAccount(accountsWithMetrics, tokenTracker, currentIndex, healthTracker.getMinUsable());
       if (selectedIndex !== null) {
@@ -750,7 +763,7 @@ export class AccountManager {
         if (selected) {
           selected.lastUsed = nowMs();
           this.markTouchedForQuota(selected, quotaKey);
-          this.currentAccountIndexByFamily[family] = selected.index;
+          setSelection(selected);
           return selected;
         }
       }
@@ -771,16 +784,20 @@ export class AccountManager {
       debugLogToFile(`[Account] Applying PID offset: pid=${process.pid} offset=${pidOffset} family=${family} index=${baseIndex}->${newIndex}`);
       
       this.currentAccountIndexByFamily[family] = newIndex;
+      if (modelKey) {
+        this.currentAccountIndexByModel.set(modelKey, newIndex);
+      }
       this.sessionOffsetApplied[family] = true;
     }
 
-    const current = this.getCurrentAccountForFamily(family);
+    const current = this.getCurrentAccountForFamily(family, model);
     if (current && eligible(current)) {
       clearExpiredRateLimits(current);
       const isLimitedForRequestedStyle = isRateLimitedForHeaderStyle(current, family, headerStyle, model);
       const isOverThreshold = isOverSoftQuotaThreshold(current, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model);
       if (!isLimitedForRequestedStyle && !isOverThreshold && !this.isAccountCoolingDown(current) && !isLicenseBlocked(current, family)) {
         this.markTouchedForQuota(current, quotaKey);
+        setSelection(current);
         return current;
       }
     }
@@ -788,7 +805,7 @@ export class AccountManager {
     const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
     if (next) {
       this.markTouchedForQuota(next, quotaKey);
-      this.currentAccountIndexByFamily[family] = next.index;
+      setSelection(next);
     }
     return next;
   }

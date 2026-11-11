@@ -7,7 +7,10 @@ import type { AccountStorageV4 } from "./storage.ts"
 import type { PluginClient } from "./types.ts"
 import { checkAccountsQuota } from "./quota.ts"
 
-vi.mock("./quota.ts", () => ({ checkAccountsQuota: vi.fn() }))
+vi.mock("./quota.ts", async importOriginal => ({
+  ...await importOriginal<typeof import("./quota.ts")>(),
+  checkAccountsQuota: vi.fn(),
+}))
 
 const state = vi.hoisted(() => ({ storage: undefined as AccountStorageV4 | undefined, beforeUpdate: undefined as (() => void) | undefined }))
 vi.mock("./storage.ts", async importOriginal => ({
