@@ -1,17 +1,23 @@
 /**
- * Tests for persistAccountPool function
- * 
+ * Tests for persistAccountPool function and account storage error safety.
+ *
  * Issue #89: Multi-account login overwrites existing accounts
- * Root cause: loadAccounts() returning null is treated as "no accounts"
+ * Root cause: loadAccounts() returning null was treated as "no accounts"
  * even when the file exists but couldn't be read (permissions, corruption, etc.)
- * 
+ *
  * @see https://github.com/NoeFabris/opencode-antigravity-auth/issues/89
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { promises as fs } from "node:fs";
 import * as storageModule from "./storage";
-import type { AccountStorageV4, AccountMetadataV3 } from "./storage";
+import {
+  AccountFileUnreadableError,
+  type AccountStorageV4,
+  type AccountMetadataV3,
+} from "./storage";
+import { persistAccountPool } from "../plugin";
+import { formatRefreshParts } from "./auth";
 
 vi.mock("proper-lockfile", () => ({
   default: {
@@ -30,6 +36,8 @@ vi.mock("node:fs", async () => {
       access: vi.fn().mockResolvedValue(undefined),
       unlink: vi.fn(),
       rename: vi.fn().mockResolvedValue(undefined),
+      chmod: vi.fn().mockResolvedValue(undefined),
+      copyFile: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
@@ -51,6 +59,22 @@ function createMockStorage(accounts: AccountMetadataV3[], activeIndex = 0): Acco
     version: 4,
     accounts,
     activeIndex,
+  };
+}
+
+function mockAuthResult(
+  refreshToken: string,
+  email?: string,
+  projectId = "test-project-id",
+  managedProjectId = "test-managed-project-id",
+) {
+  return {
+    type: "success" as const,
+    refresh: formatRefreshParts({ refreshToken, projectId, managedProjectId }),
+    access: "test-access-token",
+    expires: Date.now() + 3600_000,
+    projectId,
+    email,
   };
 }
 
@@ -76,7 +100,7 @@ describe("loadAccounts", () => {
   });
 
   describe("file exists with valid data", () => {
-    it("returns storage for valid V3 file", async () => {
+    it("returns storage for valid V4 file", async () => {
       const mockStorage = createMockStorage([createMockAccount()]);
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockStorage));
 
@@ -102,10 +126,13 @@ describe("loadAccounts", () => {
     });
 
     it("preserves activeIndex from storage", async () => {
-      const mockStorage = createMockStorage([
-        createMockAccount({ email: "user1@example.com", refreshToken: "token1" }),
-        createMockAccount({ email: "user2@example.com", refreshToken: "token2" }),
-      ], 1);
+      const mockStorage = createMockStorage(
+        [
+          createMockAccount({ email: "user1@example.com", refreshToken: "token1" }),
+          createMockAccount({ email: "user2@example.com", refreshToken: "token2" }),
+        ],
+        1,
+      );
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockStorage));
 
       const result = await storageModule.loadAccounts();
@@ -114,51 +141,56 @@ describe("loadAccounts", () => {
     });
   });
 
-  describe("error handling - THE BUG (Issue #89)", () => {
-    /**
-     * THIS IS THE BUG: loadAccounts returns null for ANY error, not just ENOENT.
-     * The caller (persistAccountPool) cannot distinguish between:
-     * - File doesn't exist (safe to create new)
-     * - File exists but couldn't be read (DANGEROUS - would overwrite!)
-     */
-
-    it("returns null on permission denied (EACCES)", async () => {
+  describe("error handling - Issue #89 resolution", () => {
+    it("throws AccountFileUnreadableError on permission denied (EACCES)", async () => {
       const error = new Error("EACCES") as NodeJS.ErrnoException;
       error.code = "EACCES";
       vi.mocked(fs.readFile).mockRejectedValue(error);
 
-      const result = await storageModule.loadAccounts();
-
-      expect(result).toBeNull();
+      await expect(storageModule.loadAccounts()).rejects.toThrow(AccountFileUnreadableError);
+      await expect(storageModule.loadAccounts()).rejects.toMatchObject({
+        reason: "PERMISSION_DENIED",
+      });
     });
 
-    it("returns null on JSON parse error", async () => {
+    it("throws AccountFileUnreadableError on JSON parse error", async () => {
       vi.mocked(fs.readFile).mockResolvedValue("{ invalid json }}}");
 
-      const result = await storageModule.loadAccounts();
-
-      expect(result).toBeNull();
+      await expect(storageModule.loadAccounts()).rejects.toThrow(AccountFileUnreadableError);
+      await expect(storageModule.loadAccounts()).rejects.toMatchObject({
+        reason: "PARSE_ERROR",
+      });
     });
 
-    it("returns null on invalid storage format", async () => {
+    it("throws AccountFileUnreadableError on invalid storage format", async () => {
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ version: 4, notAccounts: [] }));
 
-      const result = await storageModule.loadAccounts();
-
-      expect(result).toBeNull();
+      await expect(storageModule.loadAccounts()).rejects.toThrow(AccountFileUnreadableError);
+      await expect(storageModule.loadAccounts()).rejects.toMatchObject({
+        reason: "INVALID_FORMAT",
+      });
     });
 
-    it("returns null on unknown version", async () => {
+    it("throws AccountFileUnreadableError on unknown version", async () => {
       vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ version: 999, accounts: [] }));
 
-      const result = await storageModule.loadAccounts();
+      await expect(storageModule.loadAccounts()).rejects.toThrow(AccountFileUnreadableError);
+      await expect(storageModule.loadAccounts()).rejects.toMatchObject({
+        reason: "UNKNOWN_VERSION",
+      });
+    });
 
-      expect(result).toBeNull();
+    it("includes recovery instructions in error message", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("{ corrupt json");
+
+      await expect(storageModule.loadAccounts()).rejects.toThrow(
+        /To prevent data loss.*restore from a backup/i,
+      );
     });
   });
 
   describe("migration", () => {
-    it("migrates V2 to V3 successfully", async () => {
+    it("migrates V2 to V4 successfully", async () => {
       const v2Storage = {
         version: 2,
         accounts: [
@@ -208,15 +240,32 @@ describe("saveAccounts", () => {
     expect(parsed.version).toBe(4);
     expect(parsed.accounts).toHaveLength(1);
   });
+
+  it("creates a .bak backup file before replacing existing accounts file", async () => {
+    const existing = createMockStorage([createMockAccount({ email: "old@example.com" })]);
+    vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+      if (String(filePath).endsWith(".gitignore")) {
+        return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+      }
+      return JSON.stringify(existing);
+    });
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+    vi.mocked(fs.copyFile).mockResolvedValue(undefined);
+
+    const newStorage = createMockStorage([
+      createMockAccount({ email: "old@example.com" }),
+      createMockAccount({ email: "new@example.com", refreshToken: "token2" }),
+    ]);
+    await storageModule.saveAccounts(newStorage);
+
+    expect(fs.copyFile).toHaveBeenCalledWith(
+      expect.stringContaining("antigravity-accounts.json"),
+      expect.stringContaining("antigravity-accounts.json.bak"),
+    );
+  });
 });
 
-/**
- * Tests for the expected behavior of persistAccountPool
- * 
- * NOTE: persistAccountPool is currently a private function in plugin.ts.
- * These tests document the EXPECTED behavior after the fix.
- * To run these tests, persistAccountPool should be exported.
- */
 describe("persistAccountPool behavior (Issue #89)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -229,76 +278,311 @@ describe("persistAccountPool behavior (Issue #89)", () => {
   });
 
   describe("merging behavior (replaceAll=false)", () => {
-    it.todo("merges new account with existing accounts");
-    
-    it.todo("deduplicates by email, keeping the newest token");
-    
-    it.todo("deduplicates by refresh token when email not available");
-    
-    it.todo("preserves activeIndex when adding new accounts");
-    
-    it.todo("updates lastUsed timestamp for existing accounts");
+    it("merges new account with existing accounts", async () => {
+      const existing = createMockStorage([
+        createMockAccount({ email: "user1@example.com", refreshToken: "token1" }),
+      ]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("token2", "user2@example.com")], false);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      expect(writeCall).toBeDefined();
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts).toHaveLength(2);
+      expect(saved.accounts.map((a) => a.email)).toEqual([
+        "user1@example.com",
+        "user2@example.com",
+      ]);
+    });
+
+    it("deduplicates by email, keeping the newest token", async () => {
+      const existing = createMockStorage([
+        createMockAccount({ email: "user1@example.com", refreshToken: "old-token" }),
+      ]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("new-token", "user1@example.com")], false);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      expect(writeCall).toBeDefined();
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts).toHaveLength(1);
+      expect(saved.accounts[0]?.email).toBe("user1@example.com");
+      expect(saved.accounts[0]?.refreshToken).toBe("new-token");
+    });
+
+    it("deduplicates by refresh token when email not available", async () => {
+      const existing = createMockStorage([
+        createMockAccount({ email: undefined, refreshToken: "same-token" }),
+      ]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("same-token", undefined)], false);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      expect(writeCall).toBeDefined();
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts).toHaveLength(1);
+      expect(saved.accounts[0]?.refreshToken).toBe("same-token");
+    });
+
+    it("preserves activeIndex when adding new accounts", async () => {
+      const existing = createMockStorage(
+        [
+          createMockAccount({ email: "u1@example.com", refreshToken: "t1" }),
+          createMockAccount({ email: "u2@example.com", refreshToken: "t2" }),
+        ],
+        1,
+      );
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("t3", "u3@example.com")], false);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.activeIndex).toBe(1);
+    });
+
+    it("updates lastUsed timestamp for existing accounts", async () => {
+      const existing = createMockStorage([
+        createMockAccount({
+          email: "u1@example.com",
+          refreshToken: "t1",
+          lastUsed: new Date("2025-01-01").getTime(),
+        }),
+      ]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("t1", "u1@example.com")], false);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts[0]?.lastUsed).toBe(new Date("2026-01-01T12:00:00Z").getTime());
+    });
   });
 
   describe("fresh start behavior (replaceAll=true)", () => {
-    it.todo("replaces all existing accounts with new ones");
-    
-    it.todo("resets activeIndex to 0");
-    
-    it.todo("ignores existing accounts file");
+    it("replaces all existing accounts with new ones", async () => {
+      const existing = createMockStorage([
+        createMockAccount({ email: "old1@example.com", refreshToken: "t1" }),
+        createMockAccount({ email: "old2@example.com", refreshToken: "t2" }),
+      ]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("new-token", "new@example.com")], true);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      expect(writeCall).toBeDefined();
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts).toHaveLength(1);
+      expect(saved.accounts[0]?.email).toBe("new@example.com");
+    });
+
+    it("resets activeIndex to 0", async () => {
+      const existing = createMockStorage(
+        [
+          createMockAccount({ email: "old1@example.com", refreshToken: "t1" }),
+          createMockAccount({ email: "old2@example.com", refreshToken: "t2" }),
+        ],
+        1,
+      );
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("new-token", "new@example.com")], true);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.activeIndex).toBe(0);
+    });
+
+    it("ignores existing accounts file", async () => {
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(createMockStorage([createMockAccount()]));
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await persistAccountPool([mockAuthResult("brand-new", "brand-new@example.com")], true);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts.some((a) => a.email === "test@example.com")).toBe(false);
+      expect(saved.accounts[0]?.email).toBe("brand-new@example.com");
+    });
   });
 
   describe("THE BUG: error handling when loadAccounts fails (Issue #89)", () => {
-    /**
-     * Current buggy behavior:
-     * 1. User has accounts saved in ~/.config/opencode/antigravity-accounts.json
-     * 2. loadAccounts() fails (permission error, JSON parse error, etc.)
-     * 3. loadAccounts() returns null
-     * 4. persistAccountPool treats null as "no accounts exist"
-     * 5. New account REPLACES existing accounts instead of merging
-     * 
-     * Expected behavior after fix:
-     * 1. loadAccounts() should distinguish ENOENT from other errors
-     * 2. persistAccountPool should throw/warn when file exists but can't be read
-     * 3. User should be prompted about potential data loss
-     */
+    it("should NOT overwrite accounts when loadAccounts returns null due to permission error", async () => {
+      const eacces = new Error("EACCES") as NodeJS.ErrnoException;
+      eacces.code = "EACCES";
+      vi.mocked(fs.readFile).mockRejectedValue(eacces);
 
-    it.todo("should NOT overwrite accounts when loadAccounts returns null due to permission error");
-    
-    it.todo("should throw error when file exists but cannot be read");
-    
-    it.todo("should prompt user when existing accounts may be lost");
-    
-    it.todo("should only treat ENOENT as 'safe to create new file'");
+      await expect(
+        persistAccountPool([mockAuthResult("token-wont-save", "user@example.com")], false),
+      ).rejects.toThrow(AccountFileUnreadableError);
+
+      // Crucial: writeFile for storage was never called!
+      const storageWrites = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter((c) => !String(c[0]).endsWith(".gitignore"));
+      expect(storageWrites).toHaveLength(0);
+    });
+
+    it("should throw error when file exists but cannot be read", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("{ broken json !!!");
+
+      await expect(
+        persistAccountPool([mockAuthResult("token", "user@example.com")], false),
+      ).rejects.toThrow(AccountFileUnreadableError);
+
+      const storageWrites = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter((c) => !String(c[0]).endsWith(".gitignore"));
+      expect(storageWrites).toHaveLength(0);
+    });
+
+    it("should include recovery instructions in error message", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("{ broken json !!!");
+
+      await expect(
+        persistAccountPool([mockAuthResult("token", "user@example.com")], false),
+      ).rejects.toThrow(/To prevent data loss.*restore from a backup/i);
+    });
+
+    it("should only treat ENOENT as 'safe to create new file'", async () => {
+      const enoent = new Error("ENOENT") as NodeJS.ErrnoException;
+      enoent.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(enoent);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      await expect(
+        persistAccountPool([mockAuthResult("first-token", "first@example.com")], false),
+      ).resolves.not.toThrow();
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      expect(writeCall).toBeDefined();
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts).toHaveLength(1);
+      expect(saved.accounts[0]?.email).toBe("first@example.com");
+    });
   });
 });
 
-/**
- * Tests for TUI flow integration (Issue #89)
- * 
- * The user's logs showed they went through TUI flow, not CLI flow.
- * TUI flow calls persistAccountPool with replaceAll=false,
- * which should merge accounts but doesn't when loadAccounts fails.
- */
 describe("TUI flow integration (Issue #89)", () => {
-  describe("account persistence after OAuth", () => {
-    it.todo("should merge new account with existing accounts in TUI flow");
-    
-    it.todo("should show warning when existing accounts cannot be loaded");
-    
-    it.todo("should ask user for confirmation before potentially overwriting accounts");
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  describe("authorize function behavior", () => {
-    it.todo("TUI flow (inputs falsy) should check for existing accounts");
-    
-    it.todo("should handle loadAccounts returning null gracefully");
+  describe("account persistence after OAuth", () => {
+    it("should merge new account with existing accounts in TUI flow", async () => {
+      const existing = createMockStorage([
+        createMockAccount({ email: "tui-existing@example.com", refreshToken: "tui-token-1" }),
+      ]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).endsWith(".gitignore")) {
+          return storageModule.GITIGNORE_ENTRIES.join("\n") + "\n";
+        }
+        return JSON.stringify(existing);
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+      // TUI flow always calls persistAccountPool with replaceAll=false
+      await persistAccountPool([mockAuthResult("tui-token-2", "tui-new@example.com")], false);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find((c) =>
+        String(c[0]).includes(".tmp"),
+      );
+      const saved = JSON.parse(writeCall![1] as string) as AccountStorageV4;
+      expect(saved.accounts).toHaveLength(2);
+      expect(saved.accounts.map((a) => a.email)).toContain("tui-existing@example.com");
+      expect(saved.accounts.map((a) => a.email)).toContain("tui-new@example.com");
+    });
+
+    it("should reject safely without data loss when existing accounts cannot be loaded", async () => {
+      const eacces = new Error("EACCES") as NodeJS.ErrnoException;
+      eacces.code = "EACCES";
+      vi.mocked(fs.readFile).mockRejectedValue(eacces);
+
+      await expect(
+        persistAccountPool([mockAuthResult("tui-token", "tui@example.com")], false),
+      ).rejects.toThrow(AccountFileUnreadableError);
+
+      const storageWrites = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter((c) => !String(c[0]).endsWith(".gitignore"));
+      expect(storageWrites).toHaveLength(0);
+    });
+
+    it("should handle empty results gracefully as a no-op", async () => {
+      await expect(persistAccountPool([], false)).resolves.not.toThrow();
+      expect(fs.writeFile).not.toHaveBeenCalled();
+    });
   });
 });
 
-/**
- * Regression tests to ensure the fix doesn't break normal operation
- */
 describe("regression tests", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -335,14 +619,14 @@ describe("regression tests", () => {
       expect(result?.accounts[0]?.email).toBe("existing@example.com");
     });
 
-  it("should preserve all accounts when saving", async () => {
-    const enoent = new Error("ENOENT") as NodeJS.ErrnoException;
-    enoent.code = "ENOENT";
-    vi.mocked(fs.readFile).mockRejectedValue(enoent);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+    it("should preserve all accounts when saving", async () => {
+      const enoent = new Error("ENOENT") as NodeJS.ErrnoException;
+      enoent.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(enoent);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
 
-    const storage = createMockStorage([
+      const storage = createMockStorage([
         createMockAccount({ email: "user1@example.com", refreshToken: "token1" }),
         createMockAccount({ email: "user2@example.com", refreshToken: "token2" }),
         createMockAccount({ email: "user3@example.com", refreshToken: "token3" }),
@@ -352,41 +636,17 @@ describe("regression tests", () => {
 
       expect(fs.writeFile).toHaveBeenCalledTimes(2);
 
-      const tmpWriteCall = vi.mocked(fs.writeFile).mock.calls.find(
-        (call) => (call[0] as string).includes(".tmp")
+      const tmpWriteCall = vi.mocked(fs.writeFile).mock.calls.find((call) =>
+        (call[0] as string).includes(".tmp"),
       );
       expect(tmpWriteCall).toBeDefined();
       const parsed = JSON.parse(tmpWriteCall![1] as string);
       expect(parsed.accounts).toHaveLength(3);
 
-      const gitignoreWriteCall = vi.mocked(fs.writeFile).mock.calls.find(
-        (call) => (call[0] as string).includes(".gitignore")
+      const gitignoreWriteCall = vi.mocked(fs.writeFile).mock.calls.find((call) =>
+        (call[0] as string).includes(".gitignore"),
       );
       expect(gitignoreWriteCall).toBeDefined();
     });
-  });
-});
-
-/**
- * Proposed fix validation tests
- * 
- * These tests validate enhanced error handling behavior.
- */
-describe("proposed fix validation", () => {
-  describe("loadAccounts should distinguish error types", () => {
-    it.todo("should return { error: 'ENOENT' } when file doesn't exist");
-    it.todo("should return { error: 'PERMISSION_DENIED' } on EACCES");
-    it.todo("should return { error: 'PARSE_ERROR' } on invalid JSON");
-    it.todo("should return { error: 'INVALID_FORMAT' } on schema mismatch");
-  });
-
-  describe("persistAccountPool should handle errors safely", () => {
-    it.todo("should throw AccountFileUnreadableError when file exists but can't be read");
-    it.todo("should include recovery instructions in error message");
-  });
-
-  describe("user prompts for data safety", () => {
-    it.todo("should prompt user when accounts file exists but is unreadable");
-    it.todo("should offer options: (r)etry, (b)ackup and continue, (a)bort");
   });
 });

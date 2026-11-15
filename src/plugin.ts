@@ -42,7 +42,7 @@ import { EmptyResponseError } from "./plugin/errors";
 import { fetchWithStallGuard, isStalledError, stallBodyIdleMs } from "./plugin/stall-guard";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
-import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
+import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts, type AccountStorageV4 } from "./plugin/storage";
 import { AccountManager, type ModelFamily, type RateLimitReason, parseForbiddenQuotaReason, parseRateLimitReason, isBareCapacityExhausted, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
 import { formatWaitTime } from "./plugin/logging-utils";
 import { formatQuotaResetSuffix, formatResetStamp } from "./plugin/reset-time";
@@ -862,7 +862,7 @@ export async function persistAccountPool(
     ? 0 
     : (typeof stored?.activeIndex === "number" && Number.isFinite(stored.activeIndex) ? stored.activeIndex : 0);
 
-  await saveAccounts({
+  const payload: AccountStorageV4 = {
     version: 4,
     accounts,
     activeIndex: clampInt(activeIndex, 0, accounts.length - 1),
@@ -870,7 +870,13 @@ export async function persistAccountPool(
       claude: clampInt(activeIndex, 0, accounts.length - 1),
       gemini: clampInt(activeIndex, 0, accounts.length - 1),
     },
-  });
+  };
+
+  if (replaceAll) {
+    await saveAccountsReplace(payload);
+  } else {
+    await saveAccounts(payload);
+  }
 }
 
 function buildAuthSuccessFromStoredAccount(account: {

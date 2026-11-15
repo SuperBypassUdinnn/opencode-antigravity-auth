@@ -748,6 +748,7 @@ describe("Storage Migration", () => {
       const existing = [
         ".gitignore",
         "antigravity-accounts.json",
+        "antigravity-accounts.json.bak",
         "antigravity-accounts.json.*.tmp",
         "antigravity-signature-cache.json",
         "antigravity-logs/",
@@ -812,6 +813,7 @@ describe("Storage Migration", () => {
       const existing = [
         ".gitignore",
         "antigravity-accounts.json",
+        "antigravity-accounts.json.bak",
         "antigravity-accounts.json.*.tmp",
         "antigravity-signature-cache.json",
         "antigravity-logs/",

@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- Fixed Issue #89 (data loss prevention when accounts file is unreadable):
+  `loadAccounts()` previously returned `null` on any error (permission denied,
+  corrupted JSON, invalid schema) identically to `ENOENT` (file not found).
+  A subsequent login would treat `null` as an empty pool and overwrite the
+  entire file with just the new account. `loadAccounts()` and `loadAccountsUnsafe()`
+  now throw `AccountFileUnreadableError` with actionable recovery instructions
+  when the file exists but cannot be read or parsed, aborting the operation
+  instead of overwriting existing accounts. In addition, `saveAccounts` and
+  `saveAccountsReplace` now maintain an automatic `antigravity-accounts.json.bak`
+  backup copy before replacing the file. All 25 pending TODOs in `persist-account-pool.test.ts`
+  are now implemented and verified.
 - The Antigravity endpoint silently rejects requests whose system instruction
   carries fingerprints of competing agent clients (isolated by replaying a
   captured failing request: the literal tool namespace `tools.opencode`,

@@ -25,6 +25,7 @@ const log = createLogger("storage");
 export const GITIGNORE_ENTRIES = [
   ".gitignore",
   "antigravity-accounts.json",
+  "antigravity-accounts.json.bak",
   "antigravity-accounts.json.*.tmp",
   "antigravity-signature-cache.json",
   "antigravity-logs/",
@@ -446,21 +447,36 @@ function mergeAccountStorage(
 
   for (const acc of incoming.accounts) {
     if (acc.refreshToken) {
+      let matchedToken: string | undefined;
       let existingAcc = accountMap.get(acc.refreshToken);
-      if (!existingAcc && acc.id) {
+      if (existingAcc) {
+        matchedToken = acc.refreshToken;
+      } else {
         for (const [token, previous] of accountMap) {
-          if (previous.id === acc.id) {
+          if (
+            (acc.id && previous.id === acc.id) ||
+            (acc.email && previous.email && previous.email === acc.email)
+          ) {
             existingAcc = previous;
-            accountMap.delete(token);
+            matchedToken = token;
             break;
           }
         }
       }
-      if (existingAcc) {
-        accountMap.set(acc.refreshToken, {
-          ...existingAcc,
-          ...acc,
-          id: existingAcc.id ?? acc.id,
+      if (existingAcc && matchedToken) {
+        const incomingIsNewer =
+          (acc.lastUsed || 0) > (existingAcc.lastUsed || 0) ||
+          ((acc.lastUsed || 0) === (existingAcc.lastUsed || 0) &&
+            (acc.addedAt || 0) >= (existingAcc.addedAt || 0));
+        const winnerToken = incomingIsNewer ? acc.refreshToken : existingAcc.refreshToken;
+        if (winnerToken !== matchedToken) {
+          accountMap.delete(matchedToken);
+        }
+        accountMap.set(winnerToken, {
+          ...(incomingIsNewer ? existingAcc : acc),
+          ...(incomingIsNewer ? acc : existingAcc),
+          refreshToken: winnerToken,
+          id: incomingIsNewer ? (acc.id ?? existingAcc.id) : (existingAcc.id ?? acc.id),
           // Preserve manually configured projectId/managedProjectId if not in incoming
           projectId: acc.projectId ?? existingAcc.projectId,
           managedProjectId: acc.managedProjectId ?? existingAcc.managedProjectId,
@@ -518,7 +534,7 @@ export function deduplicateAccountsByEmail<
 
     const isNewer =
       currLastUsed > existLastUsed ||
-      (currLastUsed === existLastUsed && currAddedAt > existAddedAt);
+      (currLastUsed === existLastUsed && currAddedAt >= existAddedAt);
 
     if (isNewer) {
       emailToNewestIndex.set(acc.email, i);
@@ -671,45 +687,86 @@ export function migrateV3ToV4(v3: AccountStorageV3): AccountStorageV4 {
   };
 }
 
-export async function loadAccounts(): Promise<AccountStorageV4 | null> {
+export type AccountFileUnreadableReason =
+  | "PERMISSION_DENIED"
+  | "PARSE_ERROR"
+  | "INVALID_FORMAT"
+  | "UNKNOWN_VERSION"
+  | "UNKNOWN";
+
+export class AccountFileUnreadableError extends Error {
+  readonly code = "ACCOUNT_FILE_UNREADABLE";
+  readonly reason: AccountFileUnreadableReason;
+  readonly path: string;
+  override readonly cause?: unknown;
+  override readonly name = "AccountFileUnreadableError";
+
+  constructor(filePath: string, reason: AccountFileUnreadableReason, message: string, cause?: unknown) {
+    super(message);
+    this.reason = reason;
+    this.path = filePath;
+    this.cause = cause;
+  }
+}
+
+function parseStorageContent(content: string, path: string): AccountStorageV4 {
+  let data: AnyAccountStorage;
   try {
-    const path = getStoragePath();
+    data = JSON.parse(content) as AnyAccountStorage;
+  } catch (parseError) {
+    throw new AccountFileUnreadableError(
+      path,
+      "PARSE_ERROR",
+      `Antigravity accounts file at ${path} contains invalid JSON. ` +
+        `To prevent data loss of existing accounts, operations on the account pool are aborted. ` +
+        `Please fix the file or restore from a backup (${path}.bak), or remove it to start fresh.`,
+      parseError,
+    );
+  }
+
+  if (!data || typeof data !== "object" || !Array.isArray(data.accounts)) {
+    throw new AccountFileUnreadableError(
+      path,
+      "INVALID_FORMAT",
+      `Antigravity accounts file at ${path} has an invalid format (missing accounts array). ` +
+        `To prevent data loss of existing accounts, operations on the account pool are aborted. ` +
+        `Please check the file or restore from a backup (${path}.bak).`,
+    );
+  }
+
+  if (data.version === 1) {
+    return normalizeAccountStorage(migrateV3ToV4(migrateV2ToV3(migrateV1ToV2(data))));
+  }
+  if (data.version === 2) {
+    return normalizeAccountStorage(migrateV3ToV4(migrateV2ToV3(data)));
+  }
+  if (data.version === 3) {
+    return normalizeAccountStorage(migrateV3ToV4(data));
+  }
+  if (data.version === 4) {
+    return normalizeAccountStorage(data);
+  }
+
+  throw new AccountFileUnreadableError(
+    path,
+    "UNKNOWN_VERSION",
+    `Antigravity accounts file at ${path} has unsupported version ${String((data as { version?: unknown }).version)}. ` +
+      `To prevent data loss of existing accounts, operations on the account pool are aborted.`,
+  );
+}
+
+export async function loadAccounts(): Promise<AccountStorageV4 | null> {
+  const path = getStoragePath();
+  try {
     // Ensure permissions are correct on load (fixes existing files)
     await ensureSecurePermissions(path);
 
     const content = await fs.readFile(path, "utf-8");
-    const data = JSON.parse(content) as AnyAccountStorage;
+    const storage = parseStorageContent(content, path);
 
-    if (!Array.isArray(data.accounts)) {
-      log.warn("Invalid storage format, ignoring");
-      return null;
-    }
-
-    let storage: AccountStorageV4;
-
-    if (data.version === 1) {
-      log.info("Migrating account storage from v1 to v4");
-      const v2 = migrateV1ToV2(data);
-      const v3 = migrateV2ToV3(v2);
-      storage = migrateV3ToV4(v3);
-    } else if (data.version === 2) {
-      log.info("Migrating account storage from v2 to v4");
-      const v3 = migrateV2ToV3(data);
-      storage = migrateV3ToV4(v3);
-    } else if (data.version === 3) {
-      log.info("Migrating account storage from v3 to v4");
-      storage = migrateV3ToV4(data);
-    } else if (data.version === 4) {
-      storage = data;
-    } else {
-      log.warn("Unknown storage version, ignoring", {
-        version: (data as { version?: unknown }).version,
-      });
-      return null;
-    }
-
-    storage = normalizeAccountStorage(storage);
-    if (data.version !== 4) {
+    const raw = JSON.parse(content) as { version?: number };
+    if (raw.version !== 4) {
+      log.info(`Migrating account storage from v${raw.version} to v4`);
       try {
         await saveAccounts(storage);
         log.info("Migration to v4 complete");
@@ -722,12 +779,33 @@ export async function loadAccounts(): Promise<AccountStorageV4 | null> {
 
     return storage;
   } catch (error) {
+    if (error instanceof AccountFileUnreadableError) {
+      log.error("Failed to load account storage", { path, reason: error.reason, error: error.message });
+      throw error;
+    }
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
       return null;
     }
-    log.error("Failed to load account storage", { error: String(error) });
-    return null;
+    if (code === "EACCES" || code === "EPERM") {
+      log.error("Permission denied reading account storage", { path, error: String(error) });
+      throw new AccountFileUnreadableError(
+        path,
+        "PERMISSION_DENIED",
+        `Permission denied reading Antigravity accounts file at ${path}. ` +
+          `To prevent data loss of existing accounts, operations on the account pool are aborted. ` +
+          `Please check file permissions (e.g. chmod 600 ${path}).`,
+        error,
+      );
+    }
+    log.error("Failed to load account storage", { path, error: String(error) });
+    throw new AccountFileUnreadableError(
+      path,
+      "UNKNOWN",
+      `Failed to read Antigravity accounts file at ${path}: ${(error as Error).message}. ` +
+        `To prevent data loss of existing accounts, operations on the account pool are aborted.`,
+      error,
+    );
   }
 }
 
@@ -744,10 +822,16 @@ export async function saveAccounts(storage: AccountStorageV4): Promise<void> {
       : normalizeAccountStorage(storage);
 
     const tempPath = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+    const backupPath = `${path}.bak`;
     const content = JSON.stringify(merged, null, 2);
 
     try {
       await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+      try {
+        await fs.copyFile(path, backupPath);
+      } catch {
+        // Ignored if file does not exist yet (first save)
+      }
       await fs.rename(tempPath, path);
     } catch (error) {
       // Clean up temp file on failure to prevent accumulation
@@ -771,8 +855,14 @@ export async function updateAccounts(update: (storage: AccountStorageV4) => void
     if (!storage) return null;
     update(storage);
     const tempPath = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+    const backupPath = `${path}.bak`;
     try {
       await fs.writeFile(tempPath, JSON.stringify(storage, null, 2), { encoding: "utf-8", mode: 0o600 });
+      try {
+        await fs.copyFile(path, backupPath);
+      } catch {
+        // Ignored if file does not exist yet
+      }
       await fs.rename(tempPath, path);
     } catch (error) {
       try { await fs.unlink(tempPath); } catch { /* The temporary file may not exist. */ }
@@ -795,10 +885,16 @@ export async function saveAccountsReplace(storage: AccountStorageV4): Promise<vo
 
   await withFileLock(path, async () => {
     const tempPath = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+    const backupPath = `${path}.bak`;
     const content = JSON.stringify(storage, null, 2);
 
     try {
       await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+      try {
+        await fs.copyFile(path, backupPath);
+      } catch {
+        // Ignored if file does not exist yet
+      }
       await fs.rename(tempPath, path);
     } catch (error) {
       try {
@@ -812,33 +908,38 @@ export async function saveAccountsReplace(storage: AccountStorageV4): Promise<vo
 }
 
 async function loadAccountsUnsafe(): Promise<AccountStorageV4 | null> {
+  const path = getStoragePath();
   try {
-    const path = getStoragePath();
     // Ensure permissions are correct on load (fixes existing files)
     await ensureSecurePermissions(path);
 
     const content = await fs.readFile(path, "utf-8");
-    const parsed = JSON.parse(content) as AnyAccountStorage;
-
-    if (!Array.isArray(parsed.accounts)) return null;
-
-    if (parsed.version === 1) {
-      return normalizeAccountStorage(migrateV3ToV4(migrateV2ToV3(migrateV1ToV2(parsed))));
-    }
-    if (parsed.version === 2) {
-      return normalizeAccountStorage(migrateV3ToV4(migrateV2ToV3(parsed)));
-    }
-    if (parsed.version === 3) {
-      return normalizeAccountStorage(migrateV3ToV4(parsed));
-    }
-
-    return parsed.version === 4 ? normalizeAccountStorage(parsed) : null;
+    return parseStorageContent(content, path);
   } catch (error) {
+    if (error instanceof AccountFileUnreadableError) {
+      throw error;
+    }
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
       return null;
     }
-    return null;
+    if (code === "EACCES" || code === "EPERM") {
+      throw new AccountFileUnreadableError(
+        path,
+        "PERMISSION_DENIED",
+        `Permission denied reading Antigravity accounts file at ${path}. ` +
+          `To prevent data loss of existing accounts, operations on the account pool are aborted. ` +
+          `Please check file permissions (e.g. chmod 600 ${path}).`,
+        error,
+      );
+    }
+    throw new AccountFileUnreadableError(
+      path,
+      "UNKNOWN",
+      `Failed to read Antigravity accounts file at ${path}: ${(error as Error).message}. ` +
+        `To prevent data loss of existing accounts, operations on the account pool are aborted.`,
+      error,
+    );
   }
 }
 
