@@ -23,6 +23,10 @@ export const AntigravityAccountsRpc = Rpc.define({
       input: z.object({ id: z.string(), action: z.enum(["enable", "disable", "select", "delete"]) }),
       output: z.object({ message: z.string() }),
     },
+    clearLimits: {
+      input: z.object({ id: z.string().optional() }),
+      output: z.object({ message: z.string(), cleared: z.number() }),
+    },
     models: { input: z.object({}), output: z.object({ count: z.number() }) },
   },
   events: {},

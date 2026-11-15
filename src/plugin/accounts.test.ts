@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AccountManager, isLicenseBlocked, type ModelFamily, type HeaderStyle, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, type RateLimitReason, resolveQuotaGroup } from "./accounts";
+import { AccountManager, isBareCapacityExhausted, isLicenseBlocked, type ModelFamily, type HeaderStyle, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, type RateLimitReason, resolveQuotaGroup } from "./accounts";
 import { saveAccounts, type AccountStorageV4 } from "./storage";
 import type { OAuthAuthDetails } from "./types";
 
@@ -2284,5 +2284,29 @@ describe("resolveQuotaGroup", () => {
     // Even if family says claude, model determines the quota group
     expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
     expect(resolveQuotaGroup("gemini", "gemini-3-pro")).toBe("gemini-pro");
+  });
+});
+
+describe("isBareCapacityExhausted", () => {
+  const bareMessage = "Resource has been exhausted (e.g. check quota).";
+
+  it("matches the bare Google 429 body without any reset details", () => {
+    expect(isBareCapacityExhausted(429, { message: bareMessage })).toBe(true);
+  });
+
+  it("rejects a 429 carrying provider reset info (real per-account quota)", () => {
+    expect(isBareCapacityExhausted(429, { message: bareMessage, retryDelayMs: 60000 })).toBe(false);
+    expect(isBareCapacityExhausted(429, { message: bareMessage, quotaResetTime: "2026-11-16T06:21:38Z" })).toBe(false);
+    expect(isBareCapacityExhausted(429, { reason: "QUOTA_EXHAUSTED", message: bareMessage })).toBe(false);
+  });
+
+  it("rejects other statuses and unrelated messages", () => {
+    expect(isBareCapacityExhausted(403, { message: bareMessage })).toBe(false);
+    expect(isBareCapacityExhausted(429, { message: "Rate limit exceeded. Please retry." })).toBe(false);
+    expect(isBareCapacityExhausted(429, {})).toBe(false);
+  });
+
+  it("matches the snake_case RESOURCE_EXHAUSTED wording too", () => {
+    expect(isBareCapacityExhausted(429, { message: "RESOURCE_EXHAUSTED" })).toBe(true);
   });
 });

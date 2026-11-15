@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A bare 429 `RESOURCE_EXHAUSTED` body (no reason, retry delay, or quota reset
+  timestamp) is now classified as an upstream capacity event instead of
+  per-account quota exhaustion. These attempts retry with short exponential
+  backoff without locking accounts, and a per-request cap fails the turn with
+  an honest error instead of cycling the whole pool for minutes.
+
+### Added
+
+- `/antigravity` menu actions to clear rate-limit markers manually, per account
+  or across the whole pool. Clearing removes persisted rate-limit markers and
+  cooldowns plus the in-memory health penalty, so an account that still has
+  quota becomes selectable again without waiting out a stale marker.
+
 ### Changed
 
 - The Gemini CLI quota path is closed by default. When the Antigravity pool is

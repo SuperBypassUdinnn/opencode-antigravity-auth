@@ -128,3 +128,45 @@ describe("account management", () => {
     else expect(state.storage!.accounts.some(item => item.id === account!.id)).toBe(false)
   })
 })
+
+describe("account management clearLimits", () => {
+  it("clears rate-limit markers on a single account and flushes before and after", async () => {
+    const { handlers, beforeWrite } = await host()
+    const target = state.storage!.accounts[1]!
+    target.rateLimitResetTimes = { claude: Date.now() + 3600_000, "gemini-antigravity:antigravity-gemini-3.8-flash": Date.now() + 7200_000 }
+    target.coolingDownUntil = Date.now() + 5000
+    state.storage!.accounts[2]!.rateLimitResetTimes = { claude: Date.now() + 3600_000 }
+
+    const result = await handlers.clearLimits({ id: accountID(target) }, callContext)
+
+    expect(result.cleared).toBe(1)
+    expect(state.storage?.accounts[1]?.rateLimitResetTimes).toEqual({})
+    expect(state.storage?.accounts[1]?.coolingDownUntil).toBeUndefined()
+    // Untouched account keeps its markers
+    expect(Object.keys(state.storage?.accounts[2]?.rateLimitResetTimes ?? {})).toHaveLength(1)
+    // Flush both before reading and after clearing
+    expect(beforeWrite).toHaveBeenCalledTimes(2)
+  })
+
+  it("clears every enabled account when no id is given and skips disabled ones", async () => {
+    const { handlers } = await host()
+    state.storage!.accounts[0]!.rateLimitResetTimes = { claude: Date.now() + 3600_000 }
+    state.storage!.accounts[1]!.rateLimitResetTimes = { claude: Date.now() + 3600_000 }
+    state.storage!.accounts[2]!.enabled = false
+    state.storage!.accounts[2]!.rateLimitResetTimes = { claude: Date.now() + 3600_000 }
+
+    const result = await handlers.clearLimits({}, callContext)
+
+    expect(result.cleared).toBe(2)
+    expect(state.storage?.accounts[0]?.rateLimitResetTimes).toEqual({})
+    expect(state.storage?.accounts[1]?.rateLimitResetTimes).toEqual({})
+    expect(Object.keys(state.storage?.accounts[2]?.rateLimitResetTimes ?? {})).toHaveLength(1)
+  })
+
+  it("reports zero cleared when no account carries markers", async () => {
+    const { handlers } = await host()
+    const result = await handlers.clearLimits({}, callContext)
+    expect(result.cleared).toBe(0)
+    expect(result.message).toMatch(/No rate-limit markers/)
+  })
+})

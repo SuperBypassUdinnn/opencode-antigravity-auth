@@ -43,7 +43,7 @@ import { fetchWithStallGuard, isStalledError, stallBodyIdleMs } from "./plugin/s
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccountCredentials, saveAccounts, saveAccountsReplace, updateAccountCredentials, updateAccounts } from "./plugin/storage";
-import { AccountManager, type ModelFamily, parseForbiddenQuotaReason, parseRateLimitReason, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
+import { AccountManager, type ModelFamily, type RateLimitReason, parseForbiddenQuotaReason, parseRateLimitReason, isBareCapacityExhausted, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
 import { formatWaitTime } from "./plugin/logging-utils";
 import { formatQuotaResetSuffix, formatResetStamp } from "./plugin/reset-time";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
@@ -1861,6 +1861,11 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // Set when a round reaches a real request attempt; a round that only
           // switches accounts feeds the selection guard instead.
           let roundMadeAttempt = true;
+          // Bare capacity 429s (no reset details) are an upstream event: cap the
+          // total per request so a Google-side outage fails the turn fast instead
+          // of cycling the pool for minutes (2026-11-15 incident: 212 requests).
+          let bareCapacity429Count = 0;
+          const MAX_BARE_CAPACITY_429S = 24;
 
           while (true) {
             // Check for abort at the start of each iteration
@@ -2423,7 +2428,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   const serverRetryMs = bodyInfo.retryDelayMs ?? headerRetryMs;
 
                   // [Enhanced Parsing] Pass status to handling logic
-                  const rateLimitReason = parseRateLimitReason(bodyInfo.reason, bodyInfo.message, response.status);
+                  // A bare "Resource has been exhausted" 429 (no reason, no retry
+                  // delay, no reset time) is an upstream capacity event, not
+                  // per-account quota: retrying with short backoff beats locking
+                  // 19 accounts with markers and cycling for minutes.
+                  const bareCapacity429 = isBareCapacityExhausted(response.status, bodyInfo);
+                  const rateLimitReason: RateLimitReason = bareCapacity429
+                    ? "MODEL_CAPACITY_EXHAUSTED"
+                    : parseRateLimitReason(bodyInfo.reason, bodyInfo.message, response.status);
+                  if (bareCapacity429) {
+                    bareCapacity429Count++;
+                    pushDebug(`bare-capacity-429 count=${bareCapacity429Count} idx=${account.index}`);
+                    if (bareCapacity429Count > MAX_BARE_CAPACITY_429S) {
+                      throw new Error(
+                        `Google returned 429 RESOURCE_EXHAUSTED without reset details on ${bareCapacity429Count} attempts for ${model ?? family} — ` +
+                        `an upstream capacity event, not per-account quota. No accounts were locked; retry in a few minutes.`,
+                      );
+                    }
+                  }
 
                   // STRATEGY 1: CAPACITY / SERVER ERROR (Transient)
                   // Goal: Wait and Retry SAME Account. DO NOT LOCK.

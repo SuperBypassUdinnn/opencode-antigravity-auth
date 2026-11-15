@@ -5,6 +5,7 @@ import { parseRefreshParts } from "./auth.ts"
 import { checkAccountsQuota, isProQuotaGroup } from "./quota.ts"
 import { accountTokenHash, loadAccounts, matchesAccountToken, saveAccountCredentials, updateAccountCredentials, updateAccounts, type AccountMetadataV3 } from "./storage.ts"
 import { formatResetStamp, formatTwoTierQuotaReport } from "./reset-time.ts"
+import { getHealthTracker } from "./rotation.ts"
 import type { PluginClient } from "./types.ts"
 
 export const accountID = (account: Pick<AccountMetadataV3, "id" | "refreshToken">) => account.id ?? accountTokenHash(account.refreshToken)
@@ -174,6 +175,33 @@ export async function registerAccountManagement(
       await ctx.storage.remove("model-catalog")
       await afterWrite()
       return { message: action === "select" ? "Account selected" : action === "delete" ? "Account deleted" : action === "enable" ? "Account enabled" : "Account disabled" }
+    },
+    async clearLimits({ id }) {
+      await beforeWrite()
+      let cleared = 0
+      await updateAccounts(storage => {
+        for (const [index, account] of storage.accounts.entries()) {
+          if (id && accountID(account) !== id) continue
+          if (account.enabled === false) continue
+          const hadMarkers = Object.keys(account.rateLimitResetTimes ?? {}).length > 0
+            || account.coolingDownUntil !== undefined
+          account.rateLimitResetTimes = {}
+          delete account.coolingDownUntil
+          delete account.cooldownReason
+          // Health penalties live in a process-wide tracker, so a disk clear
+          // alone would leave the hybrid gate excluding the account.
+          getHealthTracker().reset(index)
+          if (hadMarkers) cleared++
+        }
+      })
+      // Rebuild the account manager from the cleared disk state.
+      await beforeWrite()
+      return {
+        message: cleared > 0
+          ? `Cleared rate-limit markers on ${cleared} account(s)`
+          : "No rate-limit markers found to clear",
+        cleared,
+      }
     },
     async models() { return { count: await refreshModels() } },
   })

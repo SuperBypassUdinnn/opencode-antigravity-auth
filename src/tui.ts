@@ -74,6 +74,7 @@ export const AntigravityTuiPlugin = {
           { title: "Check quotas / verify access", value: "verify" },
           { title: "Use this account", value: "select", disabled: !account.enabled },
           { title: account.enabled ? "Disable account" : "Enable account", value: account.enabled ? "disable" : "enable" },
+          { title: "Clear rate-limit markers (unlock account)", value: "clear-limits" },
           { title: "Re-authenticate / refresh token", value: "login" },
           { title: "Delete this account", value: "delete" },
           { title: "Back", value: "back" },
@@ -81,6 +82,11 @@ export const AntigravityTuiPlugin = {
       })
       if (!action || action === "back") return
       if (action === "verify") return quotas(account.id)
+      if (action === "clear-limits") {
+        const result = await rpc.clearLimits({ id: account.id }, location())
+        ctx.ui.toast.show({ message: result.message, variant: "success" })
+        return
+      }
       if (action === "login") return login()
       if (action === "delete") {
         if (!await ctx.ui.dialog.confirm({ title: "Delete account?", message: `Remove ${account.email} from OpenCode and the Antigravity account pool?` })) return
@@ -101,6 +107,7 @@ export const AntigravityTuiPlugin = {
             options: [
               { title: "Add account", value: "add", category: "Actions" },
               { title: "Check quotas / verify enabled accounts", value: "quotas", category: "Actions" },
+              { title: "Clear rate-limit markers on all accounts (unlock pool)", value: "clear-limits-all", category: "Actions" },
               { title: "Refresh available models", value: "models", category: "Actions" },
               ...accounts.map(account => ({
                 title: `${account.email}${account.current ? " [current]" : ""}${account.enabled ? "" : " [disabled]"}${account.verificationRequired ? " [needs verification]" : ""}`,
@@ -113,6 +120,10 @@ export const AntigravityTuiPlugin = {
           if (!action || action === "close") return
           if (action === "add") await login()
           else if (action === "quotas") await quotas()
+          else if (action === "clear-limits-all") {
+            const result = await rpc.clearLimits({}, location())
+            ctx.ui.toast.show({ message: result.message, variant: "success" })
+          }
           else if (action === "models") {
             const { count } = await rpc.models({}, location())
             ctx.ui.toast.show({ message: `${count} available models loaded`, variant: "success" })

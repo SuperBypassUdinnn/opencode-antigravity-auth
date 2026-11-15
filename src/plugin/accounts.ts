@@ -101,6 +101,24 @@ export function parseRateLimitReason(
   return "UNKNOWN";
 }
 
+/**
+ * Detects a bare capacity-exhausted 429: Google's generic
+ * "Resource has been exhausted (e.g. check quota)." body carries no reason, no
+ * retryDelay, and no quota reset timestamp. That shape is an upstream capacity
+ * event rather than per-account quota exhaustion, so callers retry with short
+ * backoff and must not lock the account with a rate-limit marker.
+ */
+export function isBareCapacityExhausted(
+  status: number,
+  body: { reason?: string; message?: string; retryDelayMs?: number | null; quotaResetTime?: string },
+): boolean {
+  if (status !== 429) return false;
+  if (body.reason) return false;
+  if (body.retryDelayMs !== null && body.retryDelayMs !== undefined) return false;
+  if (body.quotaResetTime) return false;
+  return /resource (has been )?exhausted|resource_exhausted/i.test(body.message ?? "");
+}
+
 // A 403 that carries one of these markers means the account ran out of quota.
 // Retrying the same account or another endpoint cannot help; rotating can.
 const FORBIDDEN_QUOTA_MARKERS = [
