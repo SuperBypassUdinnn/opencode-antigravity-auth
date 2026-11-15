@@ -1854,3 +1854,63 @@ describe("per-request attempt budget", () => {
     expect(upstreamCalls).toBeLessThanOrEqual(6)
   })
 })
+
+describe("free account first", () => {
+  // The Pro account is first in the pool, so without the warm-up every request
+  // lands on it and the free account's weekly countdown never starts.
+  function proAndFree() {
+    const pro = state.storage!.accounts[0]!
+    pro.email = "pro@example.test"
+    pro.cachedQuota = {
+      "gemini-argon": {
+        remainingFraction: 1,
+        weeklyRemainingFraction: 1,
+        weeklyResetTime: new Date(Date.now() + 6 * 86_400_000).toISOString(),
+        modelCount: 1,
+      },
+    }
+    pro.cachedQuotaUpdatedAt = Date.now()
+    const free = {
+      ...pool().accounts[0]!,
+      email: "free@example.test",
+      refreshToken: "free",
+      // No weekly bucket: Google has not started this window yet.
+      cachedQuota: { "gemini-flash": { remainingFraction: 1, modelCount: 1 } },
+      cachedQuotaUpdatedAt: Date.now(),
+    }
+    state.storage!.accounts.push(free)
+    return [accountID(pro), accountID(free)]
+  }
+
+  function tokenBodies(network: ReturnType<typeof mockNetwork>): string[] {
+    return network.mock.calls
+      .filter(([input]) => String(input).includes("oauth2.googleapis.com/token"))
+      .map(([, init]) => String(init?.body))
+  }
+
+  it("spends the first request on a free account and then ranks normally", async () => {
+    const network = mockNetwork()
+    const ids = proAndFree()
+    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { "antigravity-gemini-3.8-flash-high": ids } })
+    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
+
+    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    expect(tokenBodies(network)[0]).toContain("refresh_token=free")
+
+    // Warm-up is brief: the next request falls back to the Pro account instead
+    // of pinning every request to the free one.
+    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    expect(tokenBodies(network).at(-1)).toContain("refresh_token=refresh")
+  })
+
+  it("leaves selection untouched when free_account_first is disabled", async () => {
+    const network = mockNetwork()
+    const ids = proAndFree()
+    state.configOverrides = { free_account_first: false }
+    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { "antigravity-gemini-3.8-flash-high": ids } })
+    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
+
+    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    expect(tokenBodies(network)[0]).toContain("refresh_token=refresh")
+  })
+})

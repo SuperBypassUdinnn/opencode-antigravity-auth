@@ -4,7 +4,7 @@ import type { OAuthAuthDetails, RefreshParts } from "./types";
 import type { AccountSelectionStrategy } from "./config/schema";
 import { getHealthTracker, getTokenTracker, selectHybridAccount, type AccountWithMetrics } from "./rotation";
 import { generateFingerprint, updateFingerprintVersion, type Fingerprint, type FingerprintVersion, MAX_FINGERPRINT_HISTORY } from "./fingerprint";
-import { isArgonModelName, type QuotaGroup, type QuotaGroupSummary, type QuotaModelSummary } from "./quota";
+import { isArgonModelName, isProQuotaGroup, type QuotaGroup, type QuotaGroupSummary, type QuotaModelSummary } from "./quota";
 import { getModelFamily } from "./transform/model-resolver";
 import { debugLogToFile } from "./debug";
 import { formatAccountLabel, formatWaitTime } from "./logging-utils";
@@ -582,6 +582,34 @@ export function computeSoftQuotaCacheTtlMs(
 }
 
 /**
+ * True when the account's cached data for the requested quota group carries a
+ * weekly reset stamp that is still in the future, meaning that group's weekly
+ * window is already counting down.
+ *
+ * Google starts a free account's weekly window on first use and reports no
+ * weekly bucket before that, so a missing (or already elapsed) stamp is the
+ * signal that the countdown has not started.
+ */
+function weeklyWindowIsRunning(account: ManagedAccount, group: QuotaGroup): boolean {
+  const stamp = account.cachedQuota?.[group]?.weeklyResetTime;
+  if (!stamp) return false;
+  const parsed = Date.parse(stamp);
+  return Number.isFinite(parsed) && parsed > nowMs();
+}
+
+/**
+ * True when the cached quota identifies the account as free (non-Pro).
+ *
+ * An account without a quota snapshot stays unclassified on purpose: guessing
+ * would spend a request on a pool member whose plan is unknown.
+ */
+function isKnownFreeAccount(account: ManagedAccount): boolean {
+  const groups = account.cachedQuota;
+  if (!groups || Object.keys(groups).length === 0) return false;
+  return !isProQuotaGroup(groups);
+}
+
+/**
  * In-memory multi-account manager with sticky account selection.
  *
  * Uses the same account until it hits a rate limit (429), then switches.
@@ -598,6 +626,9 @@ export class AccountManager {
     gemini: -1,
   };
   private currentAccountIndexByModel: Map<string, number> = new Map();
+  /** Free accounts already handed one warm-up request in this process, so a
+   * missing weekly bucket cannot cause repeated pokes. */
+  private freeWarmupSelected = new Set<number>();
   private sessionOffsetApplied: Record<ModelFamily, boolean> = {
     claude: false,
     gemini: false,
@@ -832,6 +863,46 @@ export class AccountManager {
     this.lastToastTime = nowMs();
   }
 
+  /**
+   * Picks a free account whose weekly window has not started, so one request
+   * can start its countdown.
+   *
+   * A pool that always prefers Pro accounts never uses its free accounts, and
+   * an unused free account never starts the weekly countdown that would renew
+   * it. Exactly one selection per account per process is spent here, and an
+   * account stops qualifying once a weekly reset stamp appears, so this stays a
+   * brief warm-up instead of a permanent preference.
+   */
+  private selectFreeAccountForWarmup(
+    family: ModelFamily,
+    model: string | null | undefined,
+    headerStyle: HeaderStyle,
+    softQuotaThresholdPercent: number,
+    softQuotaCacheTtlMs: number,
+    eligible: (account: ManagedAccount) => boolean,
+    weeklySoftQuotaThresholdPercent: number,
+  ): ManagedAccount | null {
+    const quotaGroup = resolveQuotaGroup(family, model);
+    const candidates = this.accounts.filter((account) => {
+      if (account.enabled === false || !eligible(account)) return false;
+      if (this.freeWarmupSelected.has(account.index)) return false;
+      if (!isKnownFreeAccount(account)) return false;
+      // Without cached data for the requested group there is no evidence the
+      // countdown has not started, so the account is left to normal selection.
+      if (!account.cachedQuota?.[quotaGroup]) return false;
+      if (weeklyWindowIsRunning(account, quotaGroup)) return false;
+      clearExpiredRateLimits(account);
+      if (isRateLimitedForHeaderStyle(account, family, headerStyle, model)) return false;
+      if (this.isAccountCoolingDown(account) || isLicenseBlocked(account, family)) return false;
+      if (isOverSoftQuotaThreshold(account, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent)) return false;
+      return true;
+    });
+    if (candidates.length === 0) return null;
+    // Least recently used first, so repeated warm-ups spread over the pool.
+    candidates.sort((a, b) => a.lastUsed - b.lastUsed || a.index - b.index);
+    return candidates[0] ?? null;
+  }
+
   getCurrentOrNextForFamily(
     family: ModelFamily, 
     model?: string | null,
@@ -842,6 +913,7 @@ export class AccountManager {
     softQuotaCacheTtlMs: number = 10 * 60 * 1000,
     eligible: (account: ManagedAccount) => boolean = () => true,
     weeklySoftQuotaThresholdPercent: number = 100,
+    freeAccountFirst: boolean = true,
   ): ManagedAccount | null {
     const quotaKey = getQuotaKey(family, headerStyle, model);
     const modelKey = model?.trim();
@@ -851,6 +923,28 @@ export class AccountManager {
         this.currentAccountIndexByModel.set(modelKey, selected.index);
       }
     };
+
+    if (freeAccountFirst) {
+      const warmup = this.selectFreeAccountForWarmup(
+        family,
+        model,
+        headerStyle,
+        softQuotaThresholdPercent,
+        softQuotaCacheTtlMs,
+        eligible,
+        weeklySoftQuotaThresholdPercent,
+      );
+      if (warmup) {
+        this.freeWarmupSelected.add(warmup.index);
+        this.markTouchedForQuota(warmup, quotaKey);
+        debugLogToFile(
+          `[SelectionGate] free-warmup idx=${warmup.index} weekly=unstarted family=${family} model=${model ?? "-"}`,
+        );
+        // The family and model cursors are deliberately left untouched: the
+        // warm-up must not turn into a sticky preference for a free account.
+        return warmup;
+      }
+    }
 
     if (strategy === 'round-robin') {
       const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible, weeklySoftQuotaThresholdPercent);

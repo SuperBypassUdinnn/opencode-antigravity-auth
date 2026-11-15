@@ -316,6 +316,20 @@ export const AntigravityConfigSchema = z.object({
    * @default false
    */
   pid_offset_enabled: z.boolean().default(false),
+
+  /**
+   * Spend one request on a free account whose weekly quota window has not
+   * started yet, before falling back to the normal ranking.
+   *
+   * Google starts a free account's weekly window on first use, so a pool that
+   * always prefers Pro accounts never starts the countdown on its free
+   * accounts and their weekly capacity is never scheduled to renew. Each free
+   * account is warmed once per process, and an account whose weekly reset
+   * stamp is already running is left to normal selection.
+   *
+   * @default true
+   */
+  free_account_first: z.boolean().default(true),
    
    /**
       * Switch to another account immediately on first rate limit (after 1s delay).
@@ -490,6 +504,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   cli_first: false,
   account_selection_strategy: 'hybrid',
   pid_offset_enabled: false,
+  free_account_first: true,
   switch_on_first_rate_limit: true,
   scheduling_mode: 'cache_first',
   max_cache_first_wait_seconds: 60,

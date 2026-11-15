@@ -1977,6 +1977,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
               softQuotaCacheTtlMs,
               eligible,
               config.weekly_soft_quota_threshold_percent,
+              // Free warm-up is spent once per request, on its first round: a
+              // retry round must rank normally instead of draining every free
+              // account before reaching the pool's healthy accounts.
+              config.free_account_first && accountRound === 1,
             );
 
             if (!account && allowQuotaFallback) {
@@ -1992,6 +1996,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 softQuotaCacheTtlMs,
                 eligible,
                 config.weekly_soft_quota_threshold_percent,
+                config.free_account_first && accountRound === 1,
               );
               if (account) {
                 pushDebug(

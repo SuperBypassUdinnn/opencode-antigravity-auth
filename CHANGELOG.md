@@ -25,6 +25,13 @@
   or across the whole pool. Clearing removes persisted rate-limit markers and
   cooldowns plus the in-memory health penalty, so an account that still has
   quota becomes selectable again without waiting out a stale marker.
+- `free_account_first` (default `true`) spends the first request of a turn on a
+  free account whose weekly window has not started yet. Google starts a free
+  account's weekly countdown on first use, so a pool that always preferred Pro
+  accounts never started its free accounts' countdown and their weekly capacity
+  was never scheduled to renew. Each free account is warmed once per process and
+  normal ranking resumes immediately, while accounts whose weekly reset stamp is
+  already running are left alone.
 
 ### Changed
 

@@ -168,6 +168,11 @@
       "default": false,
       "type": "boolean"
     },
+    "free_account_first": {
+      "default": true,
+      "type": "boolean",
+      "description": "Spend one request on a free account whose weekly quota window has not started yet, so its weekly countdown begins, then fall back to normal ranking. Each free account is warmed once per process."
+    },
     "switch_on_first_rate_limit": {
       "default": true,
       "type": "boolean"
