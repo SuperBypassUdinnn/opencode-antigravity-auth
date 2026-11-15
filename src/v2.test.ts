@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { EventEmitter, on } from "node:events"
 import { createRequire } from "node:module"
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { Credential, Integration, Model, Provider, type Plugin } from "@opencode/plugin"
 import type { ConnectionInfo, V2Event } from "@opencode/client"
@@ -1852,6 +1855,49 @@ describe("per-request attempt budget", () => {
     // indefinitely across a rotating pool.
     expect(upstreamCalls).toBeGreaterThan(0)
     expect(upstreamCalls).toBeLessThanOrEqual(6)
+  })
+
+  it("writes the per-attempt diagnostics to the debug file, not only the TUI buffer", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "access-token", expires_in: 3600 })
+      }
+      throw new Error("upstream connection dropped")
+    })
+    state.storage!.accounts.push({
+      ...pool().accounts[0]!,
+      email: "second@example.test",
+      refreshToken: "second-refresh",
+    })
+    // pushDebug only feeds the TUI thinking buffer, so without this assertion
+    // the retry loop can look logged while the file holds nothing (2026-11-15:
+    // 91 request bodies on disk, zero per-attempt lines).
+    const logDir = mkdtempSync(join(tmpdir(), "antigravity-retry-log-"))
+    process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS = "4"
+    state.configOverrides = { debug: true, log_dir: logDir }
+    try {
+      const adapter = await host({ connection: false })
+      const { sdk } = await adapter.sdk()
+      await expect(stream(sdk)).rejects.toThrow(/gave up after \d+ upstream attempts/)
+
+      const deadline = Date.now() + 3_000
+      let content = ""
+      while (Date.now() < deadline) {
+        content = readdirSync(logDir).map(name => readFileSync(join(logDir, name), "utf8")).join("")
+        if (content.includes("attempt-budget: gave up after")) break
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+      expect(content).toContain("[Retry] attempt #1 idx=0")
+      expect(content).toContain("[Retry] round=1 attempts=0")
+      expect(content).toContain("[Retry] upstream failed in")
+      expect(content).toContain("[Retry] attempt #1 threw: Error: upstream connection dropped")
+      expect(content).toContain("[Retry] rotate idx=0 reason=")
+      expect(content).toContain("[Retry] attempt-budget: gave up after")
+    } finally {
+      delete process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS
+      rmSync(logDir, { recursive: true, force: true })
+    }
   })
 })
 

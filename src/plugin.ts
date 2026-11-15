@@ -1800,6 +1800,14 @@ export const createAntigravityPlugin = (providerId: string) => async (
             if (!isDebugEnabled()) return;
             debugLines.push(line);
           };
+          // Retry-loop diagnostics must reach the debug FILE directly:
+          // pushDebug only feeds the TUI thinking buffer, which is dropped
+          // unless a failure reaches transformAntigravityResponse. The
+          // 2026-11-15 storm produced 91 request bodies in the file and zero
+          // per-attempt lines, because every diagnostic lived in this buffer.
+          const logRetryEvent = (line: string) => {
+            debugLogToFile(`[Retry] ${line}`);
+          };
           pushDebug(`request=${urlString}`);
 
           type FailureContext = {
@@ -1938,7 +1946,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
             if (recentRotations.length > 6) {
               recentRotations.shift();
             }
-            pushDebug(
+            logRetryEvent(
               `rotate idx=${index} reason=${reason} round=${accountRound} attempts=${attemptBudget.count}`,
             );
           };
@@ -1963,7 +1971,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
             }
             roundMadeAttempt = false;
             accountRound += 1;
-            pushDebug(
+            logRetryEvent(
               `round=${accountRound} attempts=${attemptBudget.count} accounts=${accountCount} family=${family} model=${model ?? "none"}`,
             );
 
@@ -2421,13 +2429,13 @@ export const createAntigravityPlugin = (providerId: string) => async (
               // thousands of request headers with no line saying which account,
               // endpoint, or reason drove each rotation.
               const attemptOrdinal = attemptBudget.record();
-              pushDebug(
+              logRetryEvent(
                 `attempt #${attemptOrdinal} idx=${account.index} model=${model ?? family} headerStyle=${headerStyle} endpoint=${currentEndpoint} limit=${attemptBudget.limit}`,
               );
               if (attemptBudget.exhausted) {
-                pushDebug(
-                  `attempt-budget: giving up after ${attemptBudget.count} attempts (limit ${attemptBudget.limit}) lastError=${lastError?.message ?? "none"} rotations=${recentRotations.join("|")}`,
-                );
+                const budgetMessage =
+                  `gave up after ${attemptBudget.count} attempts (limit ${attemptBudget.limit}) lastError=${lastError?.message ?? "none"} rotations=${recentRotations.join("|")}`;
+                logRetryEvent(`attempt-budget: ${budgetMessage}`);
                 throw new Error(
                   `Antigravity gave up after ${attemptBudget.count} upstream attempts (limit ${attemptBudget.limit}) for ${model ?? family}. ` +
                     `No attempt produced a usable response, so rotating accounts further cannot fix it. ` +
@@ -2516,15 +2524,15 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 try {
                   response = await fetchWithStallGuard(sendFetch, prepared.request, prepared.init);
                 } catch (error) {
-                  pushDebug(
+                  logRetryEvent(
                     `upstream failed in ${Date.now() - requestStartedAt}ms: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`,
                   );
                   throw error;
                 } finally {
                   clearInterval(heartbeat);
                 }
-                pushDebug(`upstream responded in ${Date.now() - requestStartedAt}ms`);
-                pushDebug(`status=${response.status} ${response.statusText}`);
+                logRetryEvent(`upstream responded in ${Date.now() - requestStartedAt}ms`);
+                logRetryEvent(`status=${response.status} ${response.statusText}`);
 
 
 
@@ -3042,7 +3050,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 // Every exception raised by this attempt is named here: without
                 // it a failure before the response is entirely invisible in the
                 // debug log.
-                pushDebug(
+                logRetryEvent(
                   `attempt #${attemptOrdinal} threw: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`,
                 );
                 // Refund token on network/API error (only if consumed)

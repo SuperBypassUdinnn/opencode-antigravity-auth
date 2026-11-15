@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- The per-attempt retry diagnostics introduced with the attempt budget
+  (`attempt #N`, `round=`, `rotate idx=... reason=...`, upstream response
+  timing and status, per-attempt exceptions) were buffered for the TUI thinking
+  view only and never reached the debug file, so a request storm showed 91
+  request bodies with zero per-attempt lines. They are now written directly to
+  the debug file under the `[Retry]` prefix.
 - A bare 429 `RESOURCE_EXHAUSTED` body (no reason, retry delay, or quota reset
   timestamp) is now classified as an upstream capacity event instead of
   per-account quota exhaustion. These attempts retry with short exponential
