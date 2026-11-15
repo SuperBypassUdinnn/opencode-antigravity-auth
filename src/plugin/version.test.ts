@@ -195,6 +195,35 @@ describe("fetchHubManifestVersion — bounded read", () => {
   })
 })
 
+describe("Hub changelist", () => {
+  const REAL_SHAPED_MANIFEST = [
+    "version: 2.32.1",
+    "files:",
+    "  - url: https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.1-6001966350991360/darwin-arm/Antigravity.zip",
+    "    sha512: +Xoo",
+    "    size: 216300499",
+  ].join("\n")
+
+  it("extracts the build changelist from the manifest download path", async () => {
+    const { parseHubManifestChangelist } = await import("./version.ts")
+    expect(parseHubManifestChangelist(REAL_SHAPED_MANIFEST)).toBe("6001966350991360")
+  })
+
+  it("returns null when the manifest carries no download path", async () => {
+    const { parseHubManifestChangelist } = await import("./version.ts")
+    expect(parseHubManifestChangelist("version: 2.32.1\nsha512: abc\n")).toBeNull()
+  })
+
+  it("sends the resolved changelist in the User-Agent so the client looks like a real build", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(REAL_SHAPED_MANIFEST)))
+    const { initAntigravityVersion } = await import("./version.ts")
+    const { getAntigravityUserAgent } = await import("../constants.ts")
+    await initAntigravityVersion()
+    expect(getAntigravityUserAgent()).toContain("antigravity/hub/2.32.1")
+    expect(getAntigravityUserAgent()).toContain("cl=6001966350991360")
+  })
+})
+
 
 describe("long-lived Hub version checks", () => {
   it("coalesces startup requests and checks again after the refresh interval", async () => {

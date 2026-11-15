@@ -17,6 +17,7 @@
 import {
   ANTIGRAVITY_MINIMUM_VERSION,
   getAntigravityVersion,
+  setAntigravityChangelist,
   setAntigravityVersion,
 } from "../constants";
 import { createLogger } from "./logger";
@@ -84,6 +85,18 @@ export function parseHubManifestVersion(text: string): string | null {
 }
 
 /**
+ * Extracts the build changelist from the manifest download path
+ * (`.../antigravity-hub/<version>-<changelist>/...`). The Hub appends its CL to
+ * the User-Agent, and a missing CL distinguishes an unknown build from a real
+ * client, so the plugin resolves it from the same manifest as the version.
+ * Returns null when the manifest carries no recognizable path.
+ */
+export function parseHubManifestChangelist(text: string): string | null {
+  const match = text.match(/antigravity-hub\/\d{1,6}\.\d{1,6}\.\d{1,6}-(\d{6,20})\//);
+  return match?.[1] ?? null;
+}
+
+/**
  * Reads at most maxBytes of the body. A truncated read drops its trailing partial line.
  */
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
@@ -126,6 +139,13 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
  * Returns null on network errors, non-OK responses, or unparseable manifests.
  */
 export async function fetchHubManifestVersion(url = ANTIGRAVITY_HUB_MANIFEST_URL): Promise<string | null> {
+  return (await fetchHubManifestInfo(url))?.version ?? null;
+}
+
+/**
+ * Fetches the manifest and reads both the version and the build changelist.
+ */
+async function fetchHubManifestInfo(url = ANTIGRAVITY_HUB_MANIFEST_URL): Promise<{ version: string; changelist: string | null } | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -135,7 +155,10 @@ export async function fetchHubManifestVersion(url = ANTIGRAVITY_HUB_MANIFEST_URL
       signal: controller.signal,
     });
     if (!response.ok) return null;
-    return parseHubManifestVersion(await readBoundedText(response, MAX_MANIFEST_BYTES));
+    const text = await readBoundedText(response, MAX_MANIFEST_BYTES);
+    const version = parseHubManifestVersion(text);
+    if (!version) return null;
+    return { version, changelist: parseHubManifestChangelist(text) };
   } catch {
     return null;
   } finally {
@@ -151,25 +174,26 @@ export async function initAntigravityVersion(): Promise<void> {
   const log = createLogger("version");
   const fallback = getAntigravityVersion();
 
-  const version = await fetchHubManifestVersion();
-  if (!version) {
+  const info = await fetchHubManifestInfo();
+  if (!info) {
     setAntigravityVersion(fallback);
     log.info("version-fetch-failed", { fallback });
     return;
   }
 
-  if (!isSupportedAntigravityVersion(version)) {
+  if (!isSupportedAntigravityVersion(info.version)) {
     setAntigravityVersion(fallback);
-    log.warn("version-below-minimum", { version, minimum: ANTIGRAVITY_MINIMUM_VERSION, fallback });
+    log.warn("version-below-minimum", { version: info.version, minimum: ANTIGRAVITY_MINIMUM_VERSION, fallback });
     return;
   }
 
-  if (version !== fallback) {
-    log.info("version-updated", { version, source: "manifest", previous: fallback });
+  if (info.version !== fallback) {
+    log.info("version-updated", { version: info.version, source: "manifest", previous: fallback });
   } else {
-    log.debug("version-unchanged", { version, source: "manifest" });
+    log.debug("version-unchanged", { version: info.version, source: "manifest" });
   }
-  setAntigravityVersion(version);
+  setAntigravityVersion(info.version);
+  setAntigravityChangelist(info.changelist ?? undefined);
 }
 
 export const ANTIGRAVITY_VERSION_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;

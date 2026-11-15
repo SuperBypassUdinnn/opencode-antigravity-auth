@@ -80,6 +80,7 @@ export const ANTIGRAVITY_HUB_CHANGELISTS: Readonly<Record<string, string>> = {
   "2.23.0": "998057262",
   "2.23.1": "998881661",
   "2.24.0": "1000335682",
+  "2.32.1": "6001966350991360",
 };
 
 /** Platform of the arm64 macOS update manifest the runtime version is read from. */
@@ -91,6 +92,12 @@ export const ANTIGRAVITY_GOOG_API_CLIENT = "gl-node/22.21.1";
 
 let antigravityVersion = ANTIGRAVITY_VERSION_FALLBACK;
 let versionLocked = false;
+/**
+ * Build changelist read live from the Hub manifest. A real Hub client always
+ * sends its CL, so a resolved manifest CL takes precedence over the static map
+ * and an unknown release no longer produces a UA without cl=.
+ */
+let antigravityChangelist: string | undefined;
 
 export function getAntigravityVersion(): string { return antigravityVersion; }
 
@@ -104,6 +111,14 @@ export function setAntigravityVersion(version: string): void {
   versionLocked = true;
 }
 
+export function setAntigravityChangelist(changelist: string | undefined): void {
+  antigravityChangelist = changelist;
+}
+
+export function getAntigravityChangelist(): string | undefined {
+  return antigravityChangelist;
+}
+
 /** @deprecated Use getAntigravityVersion() for runtime access. */
 export const ANTIGRAVITY_VERSION = ANTIGRAVITY_VERSION_FALLBACK;
 
@@ -113,7 +128,7 @@ export const ANTIGRAVITY_VERSION = ANTIGRAVITY_VERSION_FALLBACK;
  * Resolved at call time so requests always carry the current runtime version.
  */
 export function getAntigravityUserAgent(version: string = getAntigravityVersion()): string {
-  const changelist = ANTIGRAVITY_HUB_CHANGELISTS[version];
+  const changelist = antigravityChangelist ?? ANTIGRAVITY_HUB_CHANGELISTS[version];
   const clPart = changelist ? `; cl=${changelist}` : "";
   return `antigravity/hub/${version} (aidev_client; ${ANTIGRAVITY_HUB_PLATFORM}${clPart})`;
 }
