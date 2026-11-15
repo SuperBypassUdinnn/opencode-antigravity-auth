@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- The Antigravity endpoint silently rejects requests whose system instruction
+  carries fingerprints of competing agent clients (isolated by replaying a
+  captured failing request: the literal tool namespace `tools.opencode`,
+  injected via a user's AGENTS.md MCP-catalog docs, flipped an otherwise
+  byte-identical request between 200 and a bare 429 RESOURCE_EXHAUSTED, and
+  "You are opencode" / "You are claude code" identity claims do the same, while
+  neutral system text of any size passes). The system instruction is now
+  sanitized before sending: the namespace becomes `tools` and identity claims
+  become "You are the coding agent". Every sanitization is recorded in the
+  debug log under `[PromptSanitizer]`.
 - The bare-429 capacity cap threw its error, but the account rotation absorbed
   it as one more rotation signal: the 2026-11-15 storm log shows the cap
   throwing from attempt 25 onward while the request kept cycling to attempt

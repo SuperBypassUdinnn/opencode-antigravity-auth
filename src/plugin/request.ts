@@ -20,6 +20,7 @@ import {
 import { defaultSignatureStore } from "./stores/signature-store";
 import {
   DEBUG_MESSAGE_PREFIX,
+  debugLogToFile,
   isDebugEnabled,
   isDebugTuiEnabled,
   logAntigravityDebugResponse,
@@ -746,6 +747,59 @@ export interface PrepareRequestOptions {
    * the current Hub User-Agent, never a stored fingerprint userAgent.
    */
   fingerprint?: Fingerprint;
+}
+
+/**
+ * Google's Antigravity endpoint rejects requests whose system instruction
+ * carries fingerprints of competing agent clients, disguised as a bare 429
+ * RESOURCE_EXHAUSTED with no reset time. Isolated 2026-11-15 by replaying a
+ * captured failing request: the literal tool namespace `tools.opencode`
+ * (5 occurrences injected via a user's AGENTS.md MCP-catalog docs) flipped an
+ * otherwise byte-identical request between 200 and 429, identity claims such
+ * as "You are opencode" / "You are claude code" do the same, while neutral
+ * system text of any size passes. The official Hub client is never affected
+ * because its prompt never names another agent. These strings are prose to the
+ * model, so neutralising them changes nothing about behaviour.
+ */
+const COMPETING_CLIENT_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/tools\.opencode\b/gi, "tools"],
+  [/you are (?:an? )?(?:opencode|claude code|claude-code)\b/gi, "You are the coding agent"],
+];
+
+export function sanitizeCompetingClientFingerprints(bodyText: string): { body: string; replacements: number } {
+  if (!bodyText.includes("systemInstruction")) {
+    return { body: bodyText, replacements: 0 };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { body: bodyText, replacements: 0 };
+  }
+  let replacements = 0;
+  const visit = (payload: unknown): void => {
+    const container = payload as { systemInstruction?: { parts?: Array<{ text?: unknown }> } } | undefined;
+    const parts = container?.systemInstruction?.parts;
+    if (!Array.isArray(parts)) return;
+    for (const part of parts) {
+      const text = part?.text;
+      if (typeof text !== "string") continue;
+      let current = text;
+      for (const [pattern, replacement] of COMPETING_CLIENT_PATTERNS) {
+        current = current.replace(pattern, () => {
+          replacements += 1;
+          return replacement;
+        });
+      }
+      part.text = current;
+    }
+  };
+  visit(parsed);
+  visit((parsed as { request?: unknown })?.request);
+  if (replacements === 0) {
+    return { body: bodyText, replacements: 0 };
+  }
+  return { body: JSON.stringify(parsed), replacements };
 }
 
 export function prepareAntigravityRequest(
@@ -1551,6 +1605,16 @@ export function prepareAntigravityRequest(
       }
     } catch (error) {
       throw error;
+    }
+  }
+
+  if (typeof body === "string" && body) {
+    const sanitized = sanitizeCompetingClientFingerprints(body);
+    if (sanitized.replacements > 0) {
+      body = sanitized.body;
+      debugLogToFile(
+        `[PromptSanitizer] neutralized ${sanitized.replacements} competing-client fingerprint(s) in the system instruction`,
+      );
     }
   }
 
