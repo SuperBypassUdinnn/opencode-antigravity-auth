@@ -222,6 +222,13 @@
       "maximum": 100,
       "description": "Percentage of quota usage that triggers soft quota warnings and preemptive account switching."
     },
+    "weekly_soft_quota_threshold_percent": {
+      "default": 99,
+      "type": "number",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "Percentage of weekly quota usage that triggers preemptive account switching on two-tier accounts (takes priority over 5-hour quota). Set to 100 to disable."
+    },
     "quota_refresh_interval_minutes": {
       "default": 15,
       "type": "number",

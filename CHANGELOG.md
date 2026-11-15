@@ -12,12 +12,26 @@
 
 ### Added
 
+- A per-request attempt budget (default 120, `OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS`)
+  bounds how many upstream attempts one request may make across every account,
+  endpoint, and header style. The previous per-scope counters were re-armed on
+  every account rotation, so a pool where every account failed the same way
+  could cycle without limit; the terminal error names the attempt count, the
+  last error, and the most recent rotations.
+- Every attempt now writes its ordinal, account, model, header style, and
+  endpoint to the debug log, and every exception raised by an attempt is named
+  instead of leaving a gap between request headers and the next rotation.
 - `/antigravity` menu actions to clear rate-limit markers manually, per account
   or across the whole pool. Clearing removes persisted rate-limit markers and
   cooldowns plus the in-memory health penalty, so an account that still has
   quota becomes selectable again without waiting out a stale marker.
 
 ### Changed
+
+- The debug log no longer discards everything written after its 32 MB cap.
+  Once the cap is reached it keeps a rolling window of the most recent 2 MB,
+  so the ending of a runaway run survives: a 2026-11-15 request storm reached
+  the cap twelve minutes in and every line explaining how it ended was lost.
 
 - The Gemini CLI quota path is closed by default. When the Antigravity pool is
   exhausted, requests now surface a quota-exhausted error with the reset time

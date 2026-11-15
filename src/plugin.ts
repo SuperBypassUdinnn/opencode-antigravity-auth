@@ -1331,6 +1331,65 @@ function createSelectionGuard(): SelectionGuard {
 }
 
 /**
+ * Upper bound on upstream attempts for one request, across every account,
+ * endpoint, and header style.
+ *
+ * The per-scope counters that already exist (`MAX_GLOBAL_RETRIES`,
+ * `MAX_BARE_CAPACITY_429S`, `MAX_BODY_STALL_ATTEMPTS`) each live inside the
+ * account round that owns them, so rotating to another account re-arms them.
+ * A pool where every account fails the same way therefore cycles without
+ * limit: the 2026-11-15 incident ran roughly 2.5k attempts in twelve minutes
+ * and the debug log hit its 32 MB cap before anything explained why.
+ */
+const DEFAULT_MAX_REQUEST_ATTEMPTS = 120;
+
+function requestAttemptLimit(): number {
+  const raw = process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS;
+  if (!raw) {
+    return DEFAULT_MAX_REQUEST_ATTEMPTS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_MAX_REQUEST_ATTEMPTS;
+}
+
+interface AttemptBudget {
+  /** Counts one upstream attempt and returns its 1-based ordinal. */
+  record(): number;
+  /** Number of attempts recorded so far. */
+  readonly count: number;
+  /** Configured cap, for log lines and error messages. */
+  readonly limit: number;
+  /** True once the recorded attempts have exceeded `limit`. */
+  readonly exhausted: boolean;
+}
+
+/**
+ * Counts upstream attempts so one request can never cycle the account pool
+ * silently or forever. The caller logs every ordinal it records, so a debug
+ * log always names the attempt that ran out instead of ending on an
+ * unexplained burst of request headers.
+ */
+function createAttemptBudget(maxAttempts: number = requestAttemptLimit()): AttemptBudget {
+  const limit = maxAttempts;
+  let count = 0;
+  return {
+    record(): number {
+      count += 1;
+      return count;
+    },
+    get count(): number {
+      return count;
+    },
+    get limit(): number {
+      return limit;
+    },
+    get exhausted(): boolean {
+      return count > limit;
+    },
+  };
+}
+
+/**
  * Network error codes that indicate transient connection failures
  * and should be retried with exponential backoff.
  */
@@ -1847,6 +1906,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               eligible,
               config.soft_quota_threshold_percent,
               softQuotaCacheTtlMs,
+              config.weekly_soft_quota_threshold_percent,
             );
           };
 
@@ -1866,6 +1926,22 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // of cycling the pool for minutes (2026-11-15 incident: 212 requests).
           let bareCapacity429Count = 0;
           const MAX_BARE_CAPACITY_429S = 24;
+          // Counts every upstream attempt across all accounts so the pool can
+          // never be cycled without limit (see createAttemptBudget).
+          const attemptBudget = createAttemptBudget();
+          let accountRound = 0;
+          // Reasons for the most recent rotations, so a terminal error names
+          // what the pool was actually doing instead of "unknown".
+          const recentRotations: string[] = [];
+          const noteRotation = (index: number, reason: string): void => {
+            recentRotations.push(`#${index}:${reason}`);
+            if (recentRotations.length > 6) {
+              recentRotations.shift();
+            }
+            pushDebug(
+              `rotate idx=${index} reason=${reason} round=${accountRound} attempts=${attemptBudget.count}`,
+            );
+          };
 
           while (true) {
             // Check for abort at the start of each iteration
@@ -1886,6 +1962,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
               throw new Error("No Antigravity accounts available. Run `opencode auth login`.");
             }
             roundMadeAttempt = false;
+            accountRound += 1;
+            pushDebug(
+              `round=${accountRound} attempts=${attemptBudget.count} accounts=${accountCount} family=${family} model=${model ?? "none"}`,
+            );
 
             let account = accountManager.getCurrentOrNextForFamily(
               family, 
@@ -1896,6 +1976,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               config.soft_quota_threshold_percent,
               softQuotaCacheTtlMs,
               eligible,
+              config.weekly_soft_quota_threshold_percent,
             );
 
             if (!account && allowQuotaFallback) {
@@ -1910,6 +1991,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 config.soft_quota_threshold_percent,
                 softQuotaCacheTtlMs,
                 eligible,
+                config.weekly_soft_quota_threshold_percent,
               );
               if (account) {
                 pushDebug(
@@ -1919,21 +2001,23 @@ export const createAntigravityPlugin = (providerId: string) => async (
             }
             
             if (!account) {
-              if (accountManager.areAllAccountsOverSoftQuota(family, config.soft_quota_threshold_percent, softQuotaCacheTtlMs, model, eligible)) {
+              if (accountManager.areAllAccountsOverSoftQuota(family, config.soft_quota_threshold_percent, softQuotaCacheTtlMs, model, eligible, config.weekly_soft_quota_threshold_percent)) {
                 const threshold = config.soft_quota_threshold_percent;
-                const softQuotaWaitMs = accountManager.getMinWaitTimeForSoftQuota(family, threshold, softQuotaCacheTtlMs, model, eligible);
+                const weeklyThreshold = config.weekly_soft_quota_threshold_percent;
+                const softQuotaWaitMs = accountManager.getMinWaitTimeForSoftQuota(family, threshold, softQuotaCacheTtlMs, model, eligible, weeklyThreshold);
                 const maxWaitMs = (config.max_rate_limit_wait_seconds ?? 300) * 1000;
+                const thresholdLabel = weeklyThreshold < 100 ? `${threshold}% 5h / ${weeklyThreshold}% weekly` : `${threshold}%`;
                 
                 if (softQuotaWaitMs === null || (maxWaitMs > 0 && softQuotaWaitMs > maxWaitMs)) {
                   const waitTimeFormatted = softQuotaWaitMs ? formatWaitTime(softQuotaWaitMs) : "unknown";
                   await showToast(
-                    `All accounts over ${threshold}% quota threshold. Resets in ${waitTimeFormatted}.`,
+                    `All accounts over ${thresholdLabel} quota threshold. Resets in ${waitTimeFormatted}.`,
                     "error"
                   );
                   throw new Error(
-                    `Quota protection: All ${accountCount} account(s) are over ${threshold}% usage for ${family}. ` +
+                    `Quota protection: All ${accountCount} account(s) are over ${thresholdLabel} usage for ${family}. ` +
                     `Quota resets in ${waitTimeFormatted}. ` +
-                    `Add more accounts, wait for quota reset, or set soft_quota_threshold_percent: 100 to disable.`
+                    `Add more accounts, wait for quota reset, or set soft_quota_threshold_percent: 100 (and weekly_soft_quota_threshold_percent: 100) to disable.`
                   );
                 }
                 
@@ -1941,7 +2025,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 pushDebug(`all-over-soft-quota family=${family} accounts=${accountCount} waitMs=${softQuotaWaitMs}`);
                 
                 if (!softQuotaToastShown) {
-                  await showToast(`All ${accountCount} account(s) over ${threshold}% quota. Waiting ${formatWaitTime(softQuotaWaitMs)}...`, "warning");
+                  await showToast(`All ${accountCount} account(s) over ${thresholdLabel} quota. Waiting ${formatWaitTime(softQuotaWaitMs)}...`, "warning");
                   softQuotaToastShown = true;
                 }
                 
@@ -1959,6 +2043,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 eligible,
                 config.soft_quota_threshold_percent,
                 softQuotaCacheTtlMs,
+                config.weekly_soft_quota_threshold_percent,
               ) || 60_000;
               const waitSecValue = Math.max(1, Math.ceil(waitMs / 1000));
 
@@ -2232,7 +2317,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               // Antigravity-first fallback: exhaust antigravity across ALL accounts before gemini-cli
               if (allowQuotaFallback && family === "gemini" && headerStyle === "antigravity") {
                 // Check if ANY other account has antigravity available
-                if (accountManager.hasOtherAccountWithAntigravityAvailable(account.index, family, model, eligible, config.soft_quota_threshold_percent, softQuotaCacheTtlMs)) {
+                if (accountManager.hasOtherAccountWithAntigravityAvailable(account.index, family, model, eligible, config.soft_quota_threshold_percent, softQuotaCacheTtlMs, config.weekly_soft_quota_threshold_percent)) {
                   // Switch to another account with antigravity (preserve antigravity priority)
                   pushDebug(`antigravity rate-limited on account ${account.index}, but available on other accounts. Switching.`);
                   shouldSwitchAccount = true;
@@ -2326,6 +2411,27 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
               const currentEndpoint = endpoints[i];
 
+              // Every upstream attempt is counted and named before it runs. A
+              // silent loop is undiagnosable: the 2026-11-15 incident produced
+              // thousands of request headers with no line saying which account,
+              // endpoint, or reason drove each rotation.
+              const attemptOrdinal = attemptBudget.record();
+              pushDebug(
+                `attempt #${attemptOrdinal} idx=${account.index} model=${model ?? family} headerStyle=${headerStyle} endpoint=${currentEndpoint} limit=${attemptBudget.limit}`,
+              );
+              if (attemptBudget.exhausted) {
+                pushDebug(
+                  `attempt-budget: giving up after ${attemptBudget.count} attempts (limit ${attemptBudget.limit}) lastError=${lastError?.message ?? "none"} rotations=${recentRotations.join("|")}`,
+                );
+                throw new Error(
+                  `Antigravity gave up after ${attemptBudget.count} upstream attempts (limit ${attemptBudget.limit}) for ${model ?? family}. ` +
+                    `No attempt produced a usable response, so rotating accounts further cannot fix it. ` +
+                    `Last error: ${lastError?.message ?? "unknown"}. ` +
+                    `Recent rotations: ${recentRotations.length > 0 ? recentRotations.join(", ") : "none"}. ` +
+                    `See the debug log (OPENCODE_ANTIGRAVITY_DEBUG=1) or raise OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS to widen the budget.`,
+                );
+              }
+
               try {
                 const prepared = prepareAntigravityRequest(
                   input,
@@ -2404,10 +2510,15 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 let response: Response;
                 try {
                   response = await fetchWithStallGuard(sendFetch, prepared.request, prepared.init);
+                } catch (error) {
+                  pushDebug(
+                    `upstream failed in ${Date.now() - requestStartedAt}ms: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`,
+                  );
+                  throw error;
                 } finally {
                   clearInterval(heartbeat);
-                  pushDebug(`upstream responded in ${Date.now() - requestStartedAt}ms`);
                 }
+                pushDebug(`upstream responded in ${Date.now() - requestStartedAt}ms`);
                 pushDebug(`status=${response.status} ${response.statusText}`);
 
 
@@ -2923,6 +3034,12 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 return transformedResponse;
               } catch (error) {
+                // Every exception raised by this attempt is named here: without
+                // it a failure before the response is entirely invisible in the
+                // debug log.
+                pushDebug(
+                  `attempt #${attemptOrdinal} threw: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`,
+                );
                 // Refund token on network/API error (only if consumed)
                 if (tokenConsumed) {
                   getTokenTracker().refund(account.index);
@@ -3047,6 +3164,14 @@ export const createAntigravityPlugin = (providerId: string) => async (
             } // end headerStyleLoop
             
             if (shouldSwitchAccount) {
+              noteRotation(
+                account.index,
+                lastFailure
+                  ? `status=${lastFailure.response.status}`
+                  : lastError
+                    ? `error=${lastError.message}`
+                    : "blocked",
+              );
               // Avoid tight retry loops when there's only one account.
               if (accountCount <= 1) {
                 const forbidden = forbiddenError(accountCount);
@@ -3091,6 +3216,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     eligible,
                     config.soft_quota_threshold_percent,
                     softQuotaCacheTtlMs,
+                    config.weekly_soft_quota_threshold_percent,
                   );
                   selectionGuard.recordAttempt();
                   if (waitMs <= 0) {
@@ -3104,9 +3230,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       eligible,
                       config.soft_quota_threshold_percent,
                       softQuotaCacheTtlMs,
+                      config.weekly_soft_quota_threshold_percent,
                     );
                     pushDebug(
-                      `no-attemptable-account family=${family} accounts=${accountCount} waitMs=0 threshold=${config.soft_quota_threshold_percent} blockers=${blockers.length}`,
+                      `no-attemptable-account family=${family} accounts=${accountCount} waitMs=0 threshold=${config.soft_quota_threshold_percent} weeklyThreshold=${config.weekly_soft_quota_threshold_percent} blockers=${blockers.length}`,
                     );
                     // Show every blocked account: the pool is small and the
                     // per-account causes are the whole point of this message.
@@ -4124,4 +4251,5 @@ export const __testExports = {
   createSilentWaitBudget,
   sleepWithinBudget,
   createSelectionGuard,
+  createAttemptBudget,
 };

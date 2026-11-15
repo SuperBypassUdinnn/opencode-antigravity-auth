@@ -489,3 +489,282 @@ describe("quota candidates match tier-suffixed cache keys", () => {
     expect(selected).toBeNull();
   });
 });
+
+/**
+ * Pro accounts expose both a 5-hour and a 1-week quota on gemini-flash.
+ * When weekly quota drops to or below 1% remaining (>= 99% used), the account
+ * must rotate out even when the 5-hour window still has plenty of headroom,
+ * and wait/blocker reporting must reflect the weekly reset.
+ */
+describe("two-tier weekly soft quota priority", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    initHealthTracker({});
+    initTokenTracker({});
+  });
+
+  it("rotates away when weekly remaining <= 1% even though 5h remaining > 5%", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.99,
+        weeklyRemainingFraction: 0.008,
+        resetTime: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        weeklyResetTime: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+        modelCount: 1,
+      },
+    });
+    manager.updateQuotaCache(accounts[1]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.5,
+        weeklyRemainingFraction: 0.25,
+        modelCount: 1,
+      },
+    });
+
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
+    ).toBe(true);
+
+    const selected = manager.getCurrentOrNextForFamily(
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      "hybrid",
+      "antigravity",
+      false,
+      95,
+      30 * 60_000,
+      () => true,
+      99,
+    );
+
+    expect(selected?.index).toBe(1);
+  });
+
+  it("keeps selecting the account while weekly remaining > 1% and 5h > 5%", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.8,
+        weeklyRemainingFraction: 0.015,
+        modelCount: 1,
+      },
+    });
+
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
+    ).toBe(false);
+  });
+
+  it("still rotates when 5h remaining <= 5% even if weekly quota has plenty left", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.04,
+        weeklyRemainingFraction: 0.5,
+        modelCount: 1,
+      },
+    });
+
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
+    ).toBe(true);
+  });
+
+  it("reports weeklyResetTime and weekly label when blocked by the 1-week tier", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    const fiveHourReset = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    for (const account of accounts) {
+      manager.updateQuotaCache(account!.index, {
+        "gemini-flash": {
+          remainingFraction: 0.9,
+          weeklyRemainingFraction: 0.005,
+          resetTime: fiveHourReset,
+          weeklyResetTime: weeklyReset,
+          modelCount: 1,
+        },
+      });
+    }
+
+    expect(
+      manager.areAllAccountsOverSoftQuota("gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", () => true, 99),
+    ).toBe(true);
+
+    const softWaitMs = manager.getMinWaitTimeForSoftQuota(
+      "gemini",
+      95,
+      30 * 60_000,
+      "antigravity-gemini-3.8-flash",
+      () => true,
+      99,
+    );
+    expect(softWaitMs).toBeGreaterThan(4 * 86_400_000);
+
+    const familyWaitMs = manager.getMinWaitTimeForFamily(
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      "antigravity",
+      true,
+      () => true,
+      95,
+      30 * 60_000,
+      99,
+    );
+    expect(familyWaitMs).toBeGreaterThan(4 * 86_400_000);
+
+    const blockers = manager.describeAccountBlockers(
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      "antigravity",
+      true,
+      () => true,
+      95,
+      30 * 60_000,
+      99,
+    );
+    expect(blockers).toHaveLength(2);
+    expect(blockers[0]).toContain("over the 99% weekly soft quota threshold");
+    expect(blockers[0]).toContain("used 99.5%");
+  });
+
+  it("treats another account over weekly soft quota as unavailable for antigravity-first fallback", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
+    manager.updateQuotaCache(accounts[1]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.95,
+        weeklyRemainingFraction: 0.005,
+        modelCount: 1,
+      },
+    });
+
+    const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
+      accounts[0]!.index,
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      () => true,
+      95,
+      60_000,
+      99,
+    );
+
+    expect(hasOther).toBe(false);
+  });
+
+  it("uses the 1% weekly threshold for weekly-only gemini-argon and protects depleted weekly caches from reconciliation", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    // 1.05% remaining on weekly-only gemini-argon should pass 99% weekly limit
+    // even when the 5-hour threshold is 95%.
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-argon": {
+        remainingFraction: 0.0105,
+        weeklyRemainingFraction: 0.0105,
+        modelCount: 1,
+      },
+    });
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-4-argon-high", 99),
+    ).toBe(false);
+
+    // Rate-limit marker stays when 5h > 0 but weeklyRemainingFraction === 0.
+    manager.markRateLimited(accounts[1]!, 120_000, "gemini", "antigravity", "antigravity-gemini-3.8-flash");
+    manager.updateQuotaCache(accounts[1]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.9,
+        weeklyRemainingFraction: 0,
+        modelCount: 1,
+      },
+    });
+    expect(
+      manager.isRateLimitedForHeaderStyle(accounts[1]!, "gemini", "antigravity", "antigravity-gemini-3.8-flash"),
+    ).toBe(true);
+  });
+
+  it("does not read a weekly-stamped per-model entry as 5h quota", () => {
+    // Real-world shape observed on a Pro account (2026-11-12): every gemini
+    // per-model entry carries the WEEKLY remaining (3.2%) and the weekly reset,
+    // while the group still holds the true 5h window (24.7%). With the 5h
+    // threshold at 95% this account must stay usable at 3.7% weekly remaining.
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.247,
+        weeklyRemainingFraction: 0.037,
+        resetTime: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        weeklyResetTime: weeklyReset,
+        modelCount: 1,
+        models: { "gemini-3.8-flash-high": { remainingFraction: 0.032, resetTime: weeklyReset } },
+      },
+    });
+
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
+    ).toBe(false);
+
+    const selected = manager.getNextForFamily(
+      "gemini",
+      "antigravity-gemini-3.8-flash",
+      "antigravity",
+      95,
+      30 * 60_000,
+      () => true,
+      99,
+    );
+    expect(selected?.index).toBe(0);
+  });
+
+  it("rotates on the weekly tier when a weekly-stamped per-model entry crosses the weekly limit", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.247,
+        weeklyRemainingFraction: 0.008,
+        resetTime: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        weeklyResetTime: weeklyReset,
+        modelCount: 1,
+        models: { "gemini-3.8-flash-high": { remainingFraction: 0.006, resetTime: weeklyReset } },
+      },
+    });
+
+    const result = manager.isAccountOverSoftQuota(
+      accounts[0]!,
+      "gemini",
+      95,
+      30 * 60_000,
+      "antigravity-gemini-3.8-flash",
+      99,
+    );
+    expect(result).toBe(true);
+  });
+
+  it("still gates the 5h tier on a per-model entry whose reset matches the 5h window", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    const fiveHourReset = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      "gemini-flash": {
+        remainingFraction: 0.247,
+        weeklyRemainingFraction: 0.5,
+        resetTime: fiveHourReset,
+        weeklyResetTime: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+        modelCount: 1,
+        models: { "gemini-3.8-flash-high": { remainingFraction: 0.03, resetTime: fiveHourReset } },
+      },
+    });
+
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
+    ).toBe(true);
+  });
+});

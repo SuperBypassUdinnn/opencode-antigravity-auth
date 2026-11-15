@@ -1,4 +1,4 @@
-import { chmodSync, createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "node:process";
 import { homedir } from "node:os";
@@ -114,21 +114,35 @@ function cleanupOldLogs(logsDir: string, maxFiles: number): void {
 const MAX_DEBUG_LOG_BYTES = 32 * 1024 * 1024;
 
 /**
+ * How much of the log tail is retained in memory so a truncation keeps the
+ * decisive ending of a run instead of only its opening.
+ */
+const DEBUG_LOG_TAIL_BYTES = 2 * 1024 * 1024;
+
+/**
  * Creates a log writer function that writes to a file.
  *
- * Writes stop once `maxBytes` is reached, leaving one truncation notice behind,
- * so a runaway loop cannot fill the disk or block the event loop.
+ * The file grows until `maxBytes`, then switches to a rolling window: the most
+ * recent `tailBytes` of output always stays on disk, and everything older is
+ * dropped. Dropping the tail instead once cost a whole diagnosis — a 2026-11-15
+ * request storm reached the 32 MB cap twelve minutes in, and every line that
+ * explained how it ended was written after the cap and thrown away.
+ *
+ * While rolling, the file is rewritten from an in-memory ring in batches. That
+ * is the price of keeping the end of a runaway run on disk, and it only applies
+ * after the cap has already been hit.
  */
 export function createLogWriter(
   filePath?: string,
   maxBytes: number = MAX_DEBUG_LOG_BYTES,
+  tailBytes: number = DEBUG_LOG_TAIL_BYTES,
 ): (line: string) => void {
   if (!filePath) {
     return () => {};
   }
 
   try {
-    const stream = createWriteStream(filePath, { flags: "a", mode: 0o600 });
+    let stream = createWriteStream(filePath, { flags: "a", mode: 0o600 });
     try {
       chmodSync(filePath, 0o600);
     } catch (err: unknown) {
@@ -136,24 +150,56 @@ export function createLogWriter(
     }
     stream.on("error", () => {});
     let writtenBytes = 0;
-    let truncated = false;
+    let rolling = false;
+    const tailBudget = Math.min(tailBytes, maxBytes);
+    // Rewrite often enough that a crash still leaves a useful window behind,
+    // but not once per line: every rewrite costs one write of `tailBudget`.
+    const flushEvery = Math.max(1, Math.min(tailBudget, 64 * 1024));
+    const tail: string[] = [];
+    let tailChars = 0;
+    let unflushedChars = 0;
+    let rollingBanner = "";
+
+    const pushTail = (payload: string): void => {
+      tail.push(payload);
+      tailChars += payload.length;
+      unflushedChars += payload.length;
+      while (tailChars > tailBudget && tail.length > 0) {
+        tailChars -= tail.shift()?.length ?? 0;
+      }
+    };
+
+    const flushRolling = (): void => {
+      try {
+        writeFileSync(filePath, `${rollingBanner}${tail.join("")}`, { mode: 0o600 });
+        unflushedChars = 0;
+      } catch {
+        // A failed rewrite must not take the request down with it.
+      }
+    };
 
     return (line: string) => {
       const timestamp = new Date().toISOString();
-      const formatted = `[${timestamp}] ${line}`;
-      const payload = `${formatted}\n`;
-      if (truncated) {
+      const payload = `[${timestamp}] ${line}\n`;
+      if (!rolling) {
+        if (writtenBytes + payload.length > maxBytes) {
+          rolling = true;
+          rollingBanner =
+            `[${timestamp}] debug log reached ${maxBytes} bytes; keeping only the most recent ${tailBudget} characters from here on\n`;
+          stream.end();
+          pushTail(payload);
+          flushRolling();
+          return;
+        }
+        writtenBytes += payload.length;
+        stream.write(payload);
+        pushTail(payload);
         return;
       }
-      if (writtenBytes + payload.length > maxBytes) {
-        truncated = true;
-        stream.write(
-          `[${timestamp}] debug log truncated at ${maxBytes} bytes; further lines are dropped\n`,
-        );
-        return;
+      pushTail(payload);
+      if (unflushedChars >= flushEvery) {
+        flushRolling();
       }
-      writtenBytes += payload.length;
-      stream.write(payload);
     };
   } catch {
     return () => {};

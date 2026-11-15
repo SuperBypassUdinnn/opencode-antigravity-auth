@@ -46,3 +46,25 @@ describe("claude_prompt_auto_caching config", () => {
     expect(claudePromptAutoCaching?.description?.length ?? 0).toBeGreaterThan(0);
   });
 });
+
+describe("weekly_soft_quota_threshold_percent config", () => {
+  it("defaults weekly_soft_quota_threshold_percent to 99 (1% remaining)", () => {
+    expect(DEFAULT_CONFIG).toHaveProperty("weekly_soft_quota_threshold_percent", 99);
+  });
+
+  it("documents weekly_soft_quota_threshold_percent in the JSON schema", () => {
+    const schemaPath = new URL("../../../assets/antigravity.schema.json", import.meta.url);
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      properties?: Record<string, { type?: string; default?: unknown; description?: string }>;
+    };
+
+    const weeklySoft = schema.properties?.weekly_soft_quota_threshold_percent;
+    expect(weeklySoft).toBeDefined();
+    expect(weeklySoft).toMatchObject({
+      type: "number",
+      default: 99,
+    });
+    expect(typeof weeklySoft?.description).toBe("string");
+    expect(weeklySoft?.description?.length ?? 0).toBeGreaterThan(0);
+  });
+});

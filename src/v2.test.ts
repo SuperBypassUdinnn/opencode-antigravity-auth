@@ -1819,3 +1819,38 @@ describe("OAuth completing during an earlier save", () => {
     expect(parts.some(part => part.type === "text-delta")).toBe(true)
   })
 })
+
+describe("per-request attempt budget", () => {
+  it("stops rotating the pool once the attempt budget is exceeded", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "access-token", expires_in: 3600 })
+      }
+      // A plain error (not a network error, not a rate limit) so the loop
+      // rotates accounts without any backoff sleep.
+      throw new Error("upstream connection dropped")
+    })
+    state.storage!.accounts.push({
+      ...pool().accounts[0]!,
+      email: "second@example.test",
+      refreshToken: "second-refresh",
+    })
+    process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS = "4"
+    try {
+      const adapter = await host({ connection: false })
+      const { sdk } = await adapter.sdk()
+      await expect(stream(sdk)).rejects.toThrow(/gave up after \d+ upstream attempts \(limit 4\)/)
+    } finally {
+      delete process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS
+    }
+
+    const upstreamCalls = network.mock.calls.filter(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes(":streamGenerateContent"),
+    ).length
+    // The cap allows one attempt past the limit to detect it, and never runs on
+    // indefinitely across a rotating pool.
+    expect(upstreamCalls).toBeGreaterThan(0)
+    expect(upstreamCalls).toBeLessThanOrEqual(6)
+  })
+})

@@ -326,6 +326,9 @@ export function isLicenseBlocked(account: ManagedAccount, family: ModelFamily): 
  * or on at least one of its per-model entries. */
 function groupHasAvailableQuota(groupData: QuotaGroupSummary | undefined): boolean {
   if (!groupData) return false;
+  if (groupData.weeklyRemainingFraction != null && groupData.weeklyRemainingFraction <= 0) {
+    return false;
+  }
   if ((groupData.remainingFraction ?? 0) > 0) return true;
   return Object.values(groupData.models ?? {}).some((entry) => (entry.remainingFraction ?? 0) > 0);
 }
@@ -335,6 +338,9 @@ function groupHasAvailableQuota(groupData: QuotaGroupSummary | undefined): boole
  * is the minimum across models, so an unreported model is not assumed free. */
 function modelHasAvailableQuota(groupData: QuotaGroupSummary | undefined, model: string): boolean {
   if (!groupData) return false;
+  if (groupData.weeklyRemainingFraction != null && groupData.weeklyRemainingFraction <= 0) {
+    return false;
+  }
   const entry = perModelQuotaEntry(groupData, model);
   if (entry?.remainingFraction != null) return entry.remainingFraction > 0;
   return (groupData.remainingFraction ?? 0) > 0;
@@ -421,41 +427,148 @@ function perModelQuotaEntry(
   return undefined;
 }
 
+interface SoftQuotaEvaluation {
+  readonly over: boolean;
+  readonly quotaGroup?: QuotaGroup;
+  readonly tier?: "weekly" | "5h";
+  readonly usedPercent?: number;
+  readonly thresholdPercent?: number;
+  readonly resetTime?: string;
+}
+
+/** True when the entry's reset stamp identifies it as the weekly window of a
+ * two-tier group. Compared by timestamp (1 s tolerance) so minor formatting
+ * differences between the group and per-model reports cannot misclassify. */
+function entryMatchesWeeklyReset(
+  entryResetTime: string | undefined,
+  weeklyResetTime: string | undefined,
+): boolean {
+  if (!entryResetTime || !weeklyResetTime) return false;
+  if (entryResetTime === weeklyResetTime) return true;
+  const entry = Date.parse(entryResetTime);
+  const weekly = Date.parse(weeklyResetTime);
+  return Number.isFinite(entry) && Number.isFinite(weekly) && Math.abs(entry - weekly) < 1000;
+}
+
+/**
+ * Evaluate whether an account exceeds either the weekly soft quota threshold
+ * (prioritized first on two-tier groups) or the primary 5-hour threshold.
+ */
+function evaluateSoftQuota(
+  account: ManagedAccount,
+  family: ModelFamily,
+  thresholdPercent: number,
+  cacheTtlMs: number,
+  model?: string | null,
+  weeklyThresholdPercent: number = 100,
+): SoftQuotaEvaluation {
+  if (thresholdPercent >= 100 && weeklyThresholdPercent >= 100) return { over: false };
+  if (!account.cachedQuota) return { over: false };
+
+  if (account.cachedQuotaUpdatedAt == null) return { over: false };
+  const age = nowMs() - account.cachedQuotaUpdatedAt;
+  if (age > cacheTtlMs) return { over: false };
+
+  const quotaGroup = resolveQuotaGroup(family, model);
+  const groupData = account.cachedQuota[quotaGroup];
+  if (!groupData) return { over: false };
+
+  const modelEntry = perModelQuotaEntry(groupData, model);
+  // On two-tier (Pro) accounts the backend stamps the gemini per-model entries
+  // with the WEEKLY reset while the group carries the 5h reset, so a per-model
+  // entry must be evaluated against the threshold of the window it describes,
+  // not always against the 5h threshold.
+  const modelEntryIsWeekly = entryMatchesWeeklyReset(modelEntry?.resetTime, groupData.weeklyResetTime);
+  const weeklyDataPresent = weeklyThresholdPercent < 100 && (groupData.weeklyRemainingFraction != null || modelEntryIsWeekly);
+
+  // Prioritize the 1-week quota on two-tier accounts: if weekly remaining falls
+  // to or below the weekly limit (e.g. <= 1%), rotate even when 5h still has > 5%.
+  if (weeklyDataPresent) {
+    const weeklyReadings: Array<{ remaining?: number; resetTime?: string }> = [];
+    if (modelEntryIsWeekly) {
+      weeklyReadings.push({ remaining: modelEntry?.remainingFraction, resetTime: modelEntry?.resetTime });
+    }
+    weeklyReadings.push({
+      remaining: groupData.weeklyRemainingFraction,
+      resetTime: groupData.weeklyResetTime ?? groupData.resetTime,
+    });
+    for (const reading of weeklyReadings) {
+      if (reading.remaining == null) continue;
+      const weeklyRemaining = Math.max(0, Math.min(1, reading.remaining));
+      const weeklyUsedPercent = (1 - weeklyRemaining) * 100;
+      if (weeklyUsedPercent >= weeklyThresholdPercent) {
+        return {
+          over: true,
+          quotaGroup,
+          tier: "weekly",
+          usedPercent: weeklyUsedPercent,
+          thresholdPercent: weeklyThresholdPercent,
+          resetTime: reading.resetTime,
+        };
+      }
+    }
+    // gemini-argon has only a weekly bucket (no 5-hour window), so do not apply
+    // the tighter 5-hour threshold to the same weekly remaining fraction.
+    if (quotaGroup === "gemini-argon") {
+      return { over: false };
+    }
+  }
+
+  if (thresholdPercent >= 100) {
+    return { over: false };
+  }
+
+  // Prefer the requested model's own quota entry over the group minimum, so a
+  // depleted sibling model no longer blocks a model that still has quota. A
+  // weekly-stamped entry is weekly data and must not be read as 5h quota.
+  let fiveHourRemaining: number | undefined;
+  let fiveHourResetTime: string | undefined;
+  if (modelEntry && !modelEntryIsWeekly) {
+    fiveHourRemaining = modelEntry.remainingFraction;
+    fiveHourResetTime = modelEntry.resetTime;
+  }
+  if (fiveHourRemaining === undefined) {
+    fiveHourRemaining = groupData.remainingFraction;
+    fiveHourResetTime = groupData.resetTime;
+  }
+  if (fiveHourRemaining == null) {
+    return { over: false };
+  }
+  const remainingFraction = Math.max(0, Math.min(1, fiveHourRemaining));
+  const usedPercent = (1 - remainingFraction) * 100;
+  if (usedPercent >= thresholdPercent) {
+    return {
+      over: true,
+      quotaGroup,
+      tier: "5h",
+      usedPercent,
+      thresholdPercent,
+      resetTime: fiveHourResetTime,
+    };
+  }
+
+  return { over: false };
+}
+
 function isOverSoftQuotaThreshold(
   account: ManagedAccount,
   family: ModelFamily,
   thresholdPercent: number,
   cacheTtlMs: number,
-  model?: string | null
+  model?: string | null,
+  weeklyThresholdPercent: number = 100,
 ): boolean {
-  if (thresholdPercent >= 100) return false;
-  if (!account.cachedQuota) return false;
-  
-  if (account.cachedQuotaUpdatedAt == null) return false;
-  const age = nowMs() - account.cachedQuotaUpdatedAt;
-  if (age > cacheTtlMs) return false;
-  
-  const quotaGroup = resolveQuotaGroup(family, model);
-  
-  const groupData = account.cachedQuota[quotaGroup];
-  if (groupData?.remainingFraction == null) return false;
-  
-  // Prefer the requested model's own quota entry over the group minimum, so a
-  // depleted sibling model no longer blocks a model that still has quota.
-  const modelEntry = perModelQuotaEntry(groupData, model);
-  const remainingFraction = Math.max(0, Math.min(1, modelEntry?.remainingFraction ?? groupData.remainingFraction));
-  const usedPercent = (1 - remainingFraction) * 100;
-  const isOverThreshold = usedPercent >= thresholdPercent;
-  
-  if (isOverThreshold) {
+  const result = evaluateSoftQuota(account, family, thresholdPercent, cacheTtlMs, model, weeklyThresholdPercent);
+
+  if (result.over && result.quotaGroup && result.usedPercent !== undefined && result.thresholdPercent !== undefined) {
     const accountLabel = formatAccountLabel(account.email, account.index);
-    const resetTime = modelEntry?.resetTime ?? groupData.resetTime;
-    const resetSuffix = resetTime ? ` (resets: ${resetTime})` : "";
-    const message = `[SoftQuota] Skipping ${accountLabel}: ${quotaGroup} usage ${usedPercent.toFixed(1)}% >= threshold ${thresholdPercent}%${resetSuffix}`;
+    const resetSuffix = result.resetTime ? ` (resets: ${result.resetTime})` : "";
+    const tierSuffix = result.tier === "weekly" ? " [weekly]" : "";
+    const message = `[SoftQuota] Skipping ${accountLabel}: ${result.quotaGroup}${tierSuffix} usage ${result.usedPercent.toFixed(1)}% >= threshold ${result.thresholdPercent}%${resetSuffix}`;
     debugLogToFile(message);
   }
-  
-  return isOverThreshold;
+
+  return result.over;
 }
 
 export function computeSoftQuotaCacheTtlMs(
@@ -728,6 +841,7 @@ export class AccountManager {
     softQuotaThresholdPercent: number = 100,
     softQuotaCacheTtlMs: number = 10 * 60 * 1000,
     eligible: (account: ManagedAccount) => boolean = () => true,
+    weeklySoftQuotaThresholdPercent: number = 100,
   ): ManagedAccount | null {
     const quotaKey = getQuotaKey(family, headerStyle, model);
     const modelKey = model?.trim();
@@ -739,7 +853,7 @@ export class AccountManager {
     };
 
     if (strategy === 'round-robin') {
-      const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
+      const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible, weeklySoftQuotaThresholdPercent);
       if (next) {
         this.markTouchedForQuota(next, quotaKey);
         setSelection(next);
@@ -764,7 +878,7 @@ export class AccountManager {
             // accounts it would immediately skip when only one quota pool
             // carried a mark, burning rounds without sending anything.
             isRateLimited: isRateLimitedForHeaderStyle(acc, family, headerStyle, model) ||
-                          isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model) ||
+                          isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent) ||
                           isLicenseBlocked(acc, family),
             isCoolingDown: this.isAccountCoolingDown(acc),
           };
@@ -787,7 +901,7 @@ export class AccountManager {
       }
       // Sticky may still rescue the current account below, but the hybrid
       // exclusion reasons explain why the health/token-aware path gave up.
-      const hybridExclusions = this.describeSelectionExclusions(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
+      const hybridExclusions = this.describeSelectionExclusions(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible, weeklySoftQuotaThresholdPercent);
       debugLogToFile(`[SelectionGate] hybrid no candidate family=${family} model=${model ?? "-"} style=${headerStyle} excluded: ${hybridExclusions || "none"}`);
     }
 
@@ -812,7 +926,7 @@ export class AccountManager {
     if (current && eligible(current)) {
       clearExpiredRateLimits(current);
       const isLimitedForRequestedStyle = isRateLimitedForHeaderStyle(current, family, headerStyle, model);
-      const isOverThreshold = isOverSoftQuotaThreshold(current, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model);
+      const isOverThreshold = isOverSoftQuotaThreshold(current, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent);
       if (!isLimitedForRequestedStyle && !isOverThreshold && !this.isAccountCoolingDown(current) && !isLicenseBlocked(current, family)) {
         this.markTouchedForQuota(current, quotaKey);
         setSelection(current);
@@ -820,7 +934,7 @@ export class AccountManager {
       }
     }
 
-    const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
+    const next = this.getNextForFamily(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible, weeklySoftQuotaThresholdPercent);
     if (next) {
       this.markTouchedForQuota(next, quotaKey);
       setSelection(next);
@@ -837,6 +951,7 @@ export class AccountManager {
     softQuotaThresholdPercent: number,
     softQuotaCacheTtlMs: number,
     eligible: (account: ManagedAccount) => boolean,
+    weeklySoftQuotaThresholdPercent: number = 100,
   ): string {
     const healthTracker = getHealthTracker();
     const minUsable = healthTracker.getMinUsable();
@@ -848,7 +963,7 @@ export class AccountManager {
       if (isRateLimitedForHeaderStyle(a, family, headerStyle, model)) reasons.push("rate-limited");
       if (this.isAccountCoolingDown(a)) reasons.push("cooling-down");
       if (isLicenseBlocked(a, family)) reasons.push("license-blocked");
-      if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) reasons.push("soft-quota");
+      if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent)) reasons.push("soft-quota");
       const healthScore = healthTracker.getScore(a.index);
       if (healthScore < minUsable) reasons.push(`health=${healthScore}<${minUsable}`);
       if (reasons.length > 0) parts.push(`${a.index}=${reasons.join("+")}`);
@@ -856,12 +971,12 @@ export class AccountManager {
     return parts.join("; ");
   }
 
-  getNextForFamily(family: ModelFamily, model?: string | null, headerStyle: HeaderStyle = "antigravity", softQuotaThresholdPercent: number = 100, softQuotaCacheTtlMs: number = 10 * 60 * 1000, eligible: (account: ManagedAccount) => boolean = () => true): ManagedAccount | null {
+  getNextForFamily(family: ModelFamily, model?: string | null, headerStyle: HeaderStyle = "antigravity", softQuotaThresholdPercent: number = 100, softQuotaCacheTtlMs: number = 10 * 60 * 1000, eligible: (account: ManagedAccount) => boolean = () => true, weeklySoftQuotaThresholdPercent: number = 100): ManagedAccount | null {
     const available = this.accounts.filter((a) => {
       clearExpiredRateLimits(a);
       return a.enabled !== false && eligible(a) &&
              !isRateLimitedForHeaderStyle(a, family, headerStyle, model) && 
-             !isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model) &&
+             !isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent) &&
              !this.isAccountCoolingDown(a) &&
              !isLicenseBlocked(a, family);
     });
@@ -869,7 +984,7 @@ export class AccountManager {
     if (available.length === 0) {
       // Why nothing qualified: this is the exact question a fatal
       // "no candidate" incident needs answered after the fact.
-      const exclusions = this.describeSelectionExclusions(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible);
+      const exclusions = this.describeSelectionExclusions(family, model, headerStyle, softQuotaThresholdPercent, softQuotaCacheTtlMs, eligible, weeklySoftQuotaThresholdPercent);
       debugLogToFile(`[SelectionGate] no candidate family=${family} model=${model ?? "-"} style=${headerStyle} excluded: ${exclusions || "none"}`);
       return null;
     }
@@ -1076,6 +1191,7 @@ export class AccountManager {
     eligible: (account: ManagedAccount) => boolean = () => true,
     softQuotaThresholdPercent: number = 100,
     softQuotaCacheTtlMs: number = 0,
+    weeklySoftQuotaThresholdPercent: number = 100,
   ): boolean {
     // Claude has no gemini-cli fallback - always return false
     // (This method is only relevant for Gemini's dual quota pools)
@@ -1098,7 +1214,7 @@ export class AccountManager {
       }
       // Accounts above the soft quota threshold are skipped by selection, so
       // they cannot justify switching instead of falling back to gemini-cli.
-      if (isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) {
+      if (isOverSoftQuotaThreshold(acc, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent)) {
         return false;
       }
       // Clear expired rate limits before checking
@@ -1276,6 +1392,7 @@ export class AccountManager {
     eligible: (account: ManagedAccount) => boolean = () => true,
     softQuotaThresholdPercent: number = 100,
     softQuotaCacheTtlMs: number = 10 * 60 * 1000,
+    weeklySoftQuotaThresholdPercent: number = 100,
   ): number {
     // Mirror the full skip predicate used by account selection: an account is
     // only available when it is not rate-limited, not cooling down, not over
@@ -1294,7 +1411,7 @@ export class AccountManager {
       if (rateLimited) return false;
       if (this.isAccountCoolingDown(a)) return false;
       if (isLicenseBlocked(a, family)) return false;
-      if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) return false;
+      if (isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model, weeklySoftQuotaThresholdPercent)) return false;
       if (healthTracker.getScore(a.index) < minUsable) return false;
       return true;
     });
@@ -1335,13 +1452,16 @@ export class AccountManager {
       if (licenseBlockedUntil !== undefined && licenseBlockedUntil > now) {
         blockers.push(licenseBlockedUntil - now);
       }
-      if (
-        softQuotaThresholdPercent < 100 &&
-        isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)
-      ) {
-        const groupData = a.cachedQuota?.[resolveQuotaGroup(family, model)];
-        const resetTime = perModelQuotaEntry(groupData, model)?.resetTime ?? groupData?.resetTime;
-        const resetTimestamp = resetTime ? Date.parse(resetTime) : NaN;
+      const softQuota = evaluateSoftQuota(
+        a,
+        family,
+        softQuotaThresholdPercent,
+        softQuotaCacheTtlMs,
+        model,
+        weeklySoftQuotaThresholdPercent,
+      );
+      if (softQuota.over) {
+        const resetTimestamp = softQuota.resetTime ? Date.parse(softQuota.resetTime) : NaN;
         if (Number.isFinite(resetTimestamp) && resetTimestamp > now) {
           blockers.push(resetTimestamp - now);
         } else {
@@ -1379,6 +1499,7 @@ export class AccountManager {
     eligible: (account: ManagedAccount) => boolean,
     softQuotaThresholdPercent: number,
     softQuotaCacheTtlMs: number,
+    weeklySoftQuotaThresholdPercent: number = 100,
   ): string[] {
     const now = nowMs();
     const healthTracker = getHealthTracker();
@@ -1409,13 +1530,18 @@ export class AccountManager {
       if (licenseBlockedUntil !== undefined && licenseBlockedUntil > now) {
         causes.push(`product license missing (${a.licenseBlockReason ?? "SUBSCRIPTION_REQUIRED"}, benched ${formatWaitTime(licenseBlockedUntil - now)})`);
       }
-      if (softQuotaThresholdPercent < 100 && isOverSoftQuotaThreshold(a, family, softQuotaThresholdPercent, softQuotaCacheTtlMs, model)) {
-        const groupData = a.cachedQuota?.[resolveQuotaGroup(family, model)];
-        const entry = perModelQuotaEntry(groupData, model);
-        const remaining = entry?.remainingFraction ?? groupData?.remainingFraction;
-        const used = remaining === undefined ? "unknown" : `${((1 - remaining) * 100).toFixed(1)}%`;
-        const resetTime = entry?.resetTime ?? groupData?.resetTime;
-        causes.push(`over the ${softQuotaThresholdPercent}% soft quota threshold (used ${used}${resetTime ? `, resets ${formatResetStamp(resetTime)}` : ""})`);
+      const softQuota = evaluateSoftQuota(
+        a,
+        family,
+        softQuotaThresholdPercent,
+        softQuotaCacheTtlMs,
+        model,
+        weeklySoftQuotaThresholdPercent,
+      );
+      if (softQuota.over) {
+        const used = softQuota.usedPercent === undefined ? "unknown" : `${softQuota.usedPercent.toFixed(1)}%`;
+        const tierLabel = softQuota.tier === "weekly" ? "weekly " : "";
+        causes.push(`over the ${softQuota.thresholdPercent}% ${tierLabel}soft quota threshold (used ${used}${softQuota.resetTime ? `, resets ${formatResetStamp(softQuota.resetTime)}` : ""})`);
       }
       const healthScore = healthTracker.getScore(a.index);
       if (healthScore < minUsable) {
@@ -1827,8 +1953,15 @@ export class AccountManager {
     return changed;
   }
 
-  isAccountOverSoftQuota(account: ManagedAccount, family: ModelFamily, thresholdPercent: number, cacheTtlMs: number, model?: string | null): boolean {
-    return isOverSoftQuotaThreshold(account, family, thresholdPercent, cacheTtlMs, model);
+  isAccountOverSoftQuota(
+    account: ManagedAccount,
+    family: ModelFamily,
+    thresholdPercent: number,
+    cacheTtlMs: number,
+    model?: string | null,
+    weeklyThresholdPercent: number = 100,
+  ): boolean {
+    return isOverSoftQuotaThreshold(account, family, thresholdPercent, cacheTtlMs, model, weeklyThresholdPercent);
   }
 
   getAccountsForQuotaCheck(): AccountMetadataV3[] {
@@ -1855,11 +1988,18 @@ export class AccountManager {
     return oldest;
   }
 
-  areAllAccountsOverSoftQuota(family: ModelFamily, thresholdPercent: number, cacheTtlMs: number, model?: string | null, eligible: (account: ManagedAccount) => boolean = () => true): boolean {
-    if (thresholdPercent >= 100) return false;
+  areAllAccountsOverSoftQuota(
+    family: ModelFamily,
+    thresholdPercent: number,
+    cacheTtlMs: number,
+    model?: string | null,
+    eligible: (account: ManagedAccount) => boolean = () => true,
+    weeklyThresholdPercent: number = 100,
+  ): boolean {
+    if (thresholdPercent >= 100 && weeklyThresholdPercent >= 100) return false;
     const enabled = this.accounts.filter(a => a.enabled !== false && eligible(a));
     if (enabled.length === 0) return false;
-    return enabled.every(a => isOverSoftQuotaThreshold(a, family, thresholdPercent, cacheTtlMs, model));
+    return enabled.every(a => isOverSoftQuotaThreshold(a, family, thresholdPercent, cacheTtlMs, model, weeklyThresholdPercent));
   }
 
   /**
@@ -1874,29 +2014,35 @@ export class AccountManager {
     cacheTtlMs: number,
     model?: string | null,
     eligible: (account: ManagedAccount) => boolean = () => true,
+    weeklyThresholdPercent: number = 100,
   ): number | null {
-    if (thresholdPercent >= 100) return 0;
+    if (thresholdPercent >= 100 && weeklyThresholdPercent >= 100) return 0;
     
     const enabled = this.accounts.filter(a => a.enabled !== false && eligible(a));
     if (enabled.length === 0) return null;
     
     // If any account is available (not over threshold), no wait needed
-    const available = enabled.filter(a => !isOverSoftQuotaThreshold(a, family, thresholdPercent, cacheTtlMs, model));
+    const available = enabled.filter(a => !isOverSoftQuotaThreshold(a, family, thresholdPercent, cacheTtlMs, model, weeklyThresholdPercent));
     if (available.length > 0) return 0;
     
     // All accounts are over threshold - find earliest reset time
     // For gemini family, we MUST have the model to distinguish pro vs flash quotas.
     // Fail-open (return null = no wait info) if model is missing to avoid blocking on wrong quota.
     if (!model && family !== "claude") return null;
-    const quotaGroup = resolveQuotaGroup(family, model);
     const now = nowMs();
     const waitTimes: number[] = [];
     
     for (const acc of enabled) {
-      const groupData = acc.cachedQuota?.[quotaGroup];
-      const resetTime = perModelQuotaEntry(groupData, model)?.resetTime ?? groupData?.resetTime;
-      if (resetTime) {
-        const resetTimestamp = Date.parse(resetTime);
+      const evaluation = evaluateSoftQuota(
+        acc,
+        family,
+        thresholdPercent,
+        cacheTtlMs,
+        model,
+        weeklyThresholdPercent,
+      );
+      if (evaluation.resetTime) {
+        const resetTimestamp = Date.parse(evaluation.resetTime);
         if (Number.isFinite(resetTimestamp)) {
           waitTimes.push(Math.max(0, resetTimestamp - now));
         }

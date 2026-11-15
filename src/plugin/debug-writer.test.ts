@@ -34,18 +34,24 @@ describe("createLogWriter size cap", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("drops further lines once the byte cap is reached", async () => {
+  it("keeps the tail of the run once the byte cap is reached", async () => {
     const filePath = join(dir, "debug.log");
-    const write = createLogWriter(filePath, 400);
+    // Cap the retained tail explicitly so the test exercises the same split the
+    // real 32 MB cap uses (cap much larger than the tail budget).
+    const write = createLogWriter(filePath, 4_000, 500);
 
     for (let i = 0; i < 200; i += 1) {
       write(`line ${i} ${"x".repeat(40)}`);
     }
 
-    const content = await readWhenSettled(filePath, "debug log truncated at 400 bytes");
-    expect(content).toContain("debug log truncated at 400 bytes");
-    expect(content).not.toContain("line 199 ");
-    expect(content.split("\n").length).toBeLessThan(20);
+    const content = await readWhenSettled(filePath, "line 199 ");
+    // The decisive ending of the run survives the cap: the last attempt is
+    // exactly what a diagnosis needs.
+    expect(content).toContain("line 199 ");
+    expect(content).toContain("keeping only the most recent 500 characters");
+    // Older lines are dropped, so the window stays bounded.
+    expect(content).not.toContain("line 0 ");
+    expect(content.length).toBeLessThanOrEqual(4_000);
   });
 
   it("keeps writing while the file stays under the cap", async () => {
