@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- The bare-429 capacity cap threw its error, but the account rotation absorbed
+  it as one more rotation signal: the 2026-11-15 storm log shows the cap
+  throwing from attempt 25 onward while the request kept cycling to attempt
+  121, where only the attempt budget stopped it. Request-wide failures now
+  re-throw through the rotation, and the cap is tunable via
+  `OPENCODE_ANTIGRAVITY_MAX_BARE_429S`.
 - The per-attempt retry diagnostics introduced with the attempt budget
   (`attempt #N`, `round=`, `rotate idx=... reason=...`, upstream response
   timing and status, per-attempt exceptions) were buffered for the TUI thinking

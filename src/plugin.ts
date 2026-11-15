@@ -1343,6 +1343,27 @@ function createSelectionGuard(): SelectionGuard {
  */
 const DEFAULT_MAX_REQUEST_ATTEMPTS = 120;
 
+/** Bare-429 upstream capacity events tolerated per request before the turn
+ * fails (see TerminalRequestError). */
+const DEFAULT_MAX_BARE_CAPACITY_429S = 24;
+
+function requestBare429Limit(): number {
+  const raw = process.env.OPENCODE_ANTIGRAVITY_MAX_BARE_429S;
+  if (!raw) {
+    return DEFAULT_MAX_BARE_CAPACITY_429S;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_MAX_BARE_CAPACITY_429S;
+}
+
+/**
+ * Marks an error the account loop must not absorb: the condition is
+ * request-wide (upstream capacity exhausted, budget spent), so rotating to
+ * another account cannot fix it. The attempt catch re-throws these instead of
+ * treating them as one more rotation signal.
+ */
+class TerminalRequestError extends Error {}
+
 function requestAttemptLimit(): number {
   const raw = process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS;
   if (!raw) {
@@ -1933,7 +1954,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // total per request so a Google-side outage fails the turn fast instead
           // of cycling the pool for minutes (2026-11-15 incident: 212 requests).
           let bareCapacity429Count = 0;
-          const MAX_BARE_CAPACITY_429S = 24;
+          const MAX_BARE_CAPACITY_429S = requestBare429Limit();
           // Counts every upstream attempt across all accounts so the pool can
           // never be cycled without limit (see createAttemptBudget).
           const attemptBudget = createAttemptBudget();
@@ -2564,7 +2585,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     bareCapacity429Count++;
                     pushDebug(`bare-capacity-429 count=${bareCapacity429Count} idx=${account.index}`);
                     if (bareCapacity429Count > MAX_BARE_CAPACITY_429S) {
-                      throw new Error(
+                      throw new TerminalRequestError(
                         `Google returned 429 RESOURCE_EXHAUSTED without reset details on ${bareCapacity429Count} attempts for ${model ?? family} — ` +
                         `an upstream capacity event, not per-account quota. No accounts were locked; retry in a few minutes.`,
                       );
@@ -3057,6 +3078,14 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 if (tokenConsumed) {
                   getTokenTracker().refund(account.index);
                   tokenConsumed = false;
+                }
+
+                // A request-wide condition must not be absorbed by the rotation
+                // below: 2026-11-15 showed the bare-429 cap throwing at 25 and
+                // the catch rotating on anyway, so the request ran to attempt
+                // 121 before the attempt budget stopped it.
+                if (error instanceof TerminalRequestError) {
+                  throw error;
                 }
 
                 // Handle recoverable thinking errors - retry with forced recovery

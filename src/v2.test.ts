@@ -1899,6 +1899,46 @@ describe("per-request attempt budget", () => {
       rmSync(logDir, { recursive: true, force: true })
     }
   })
+
+  it("fails fast on pool-wide bare 429 capacity exhaustion instead of absorbing the cap", async () => {
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "access-token", expires_in: 3600 })
+      }
+      // Google's bare capacity 429: a message, but no reason, no retry delay,
+      // and no reset time (the plain-text body does not parse as this shape).
+      return Response.json(
+        { error: { code: 429, message: "Resource has been exhausted (e.g. check quota).", status: "RESOURCE_EXHAUSTED" } },
+        { status: 429 },
+      )
+    })
+    for (const name of ["second", "third", "fourth"]) {
+      state.storage!.accounts.push({
+        ...pool().accounts[0]!,
+        email: `${name}@example.test`,
+        refreshToken: name,
+      })
+    }
+    process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS = "100"
+    process.env.OPENCODE_ANTIGRAVITY_MAX_BARE_429S = "2"
+    try {
+      const adapter = await host({ connection: false })
+      const { sdk } = await adapter.sdk()
+      // The cap must TERMINATE the request; before the terminal rethrow the
+      // rotation absorbed it and ran on to the attempt budget (121 attempts in
+      // the 2026-11-15 storm).
+      await expect(stream(sdk)).rejects.toThrow(/without reset details on 3 attempts/)
+    } finally {
+      delete process.env.OPENCODE_ANTIGRAVITY_MAX_ATTEMPTS
+      delete process.env.OPENCODE_ANTIGRAVITY_MAX_BARE_429S
+    }
+
+    const upstreamCalls = network.mock.calls.filter(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes(":streamGenerateContent"),
+    ).length
+    expect(upstreamCalls).toBeLessThanOrEqual(4)
+  })
 })
 
 describe("free account first", () => {
