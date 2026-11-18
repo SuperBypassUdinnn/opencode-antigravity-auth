@@ -17,6 +17,7 @@ vi.mock("./debug", async (importOriginal) => ({
 }));
 import { SKIP_THOUGHT_SIGNATURE, getAntigravityUserAgent } from "../constants";
 import * as config from "./config";
+import { getCachedSignature } from "./cache";
 import type { SignatureStore, ThoughtBuffer, StreamingCallbacks, StreamingOptions } from "./core/streaming/types";
 
 const {
@@ -748,6 +749,37 @@ it("removes x-api-key header", () => {
       expect(JSON.parse(result.init.body as string).model).toBe("gemini-3.8-flash-high");
     });
 
+    it.each([
+      ["antigravity-claude-sonnet-5-5", "low", "claude-sonnet-5-5-low", 8192],
+      ["antigravity-claude-sonnet-5-5", "medium", "claude-sonnet-5-5-medium", 16384],
+      ["antigravity-claude-opus-5-5", "high", "claude-opus-5-5-high", 32768],
+    ] as const)("maps collapsed Claude 5.5 variant %s#%s to backend tier ID and snake_case thinkingConfig", (modelId, level, expectedBackend, expectedBudget) => {
+      const result = prepareAntigravityRequest(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: "hi" }] }],
+            providerOptions: { google: { thinkingConfig: { includeThoughts: true, thinkingLevel: level } } },
+          }),
+        },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "antigravity",
+      );
+      expect(result.effectiveModel).toBe(expectedBackend);
+      const parsedBody = JSON.parse(result.init.body as string) as {
+        model: string;
+        request: { generationConfig?: { thinkingConfig?: Record<string, unknown> } };
+      };
+      expect(parsedBody.model).toBe(expectedBackend);
+      expect(parsedBody.request.generationConfig?.thinkingConfig).toEqual({
+        include_thoughts: true,
+        thinking_budget: expectedBudget,
+      });
+    });
+
     it("defaults a collapsed Flash model without a variant to the low tier ID", () => {
       const result = prepareAntigravityRequest(
         "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.8-flash:generateContent",
@@ -1471,7 +1503,7 @@ it("removes x-api-key header", () => {
       vi.mocked(debugModule.debugLogToFile).mockClear();
     });
 
-    it("rewrites a Google error event into a visible response text", () => {
+    it("rewrites a Google error event into a top-level Gemini response chunk", () => {
       const store = createMockSignatureStore();
       const buffer = createMockThoughtBuffer();
       const sentBuffer = createMockThoughtBuffer();
@@ -1482,13 +1514,12 @@ it("removes x-api-key header", () => {
       );
 
       const payload = JSON.parse(result.slice("data: ".length)) as {
-        response: { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+        candidates: Array<{ finishReason?: string; content: { parts: Array<{ text: string }> } }>;
       };
-      const text = payload.response.candidates[0]!.content.parts[0]!.text;
+      const text = payload.candidates[0]!.content.parts[0]!.text;
       expect(text).toContain("RESOURCE_EXHAUSTED");
       expect(text).toContain("quota exceeded");
-      const candidate = payload.response.candidates[0] as unknown as { finishReason?: string };
-      expect(candidate.finishReason).toBe("STOP");
+      expect(payload.candidates[0]!.finishReason).toBe("STOP");
       expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("upstream error event"));
     });
 
@@ -1527,6 +1558,88 @@ it("removes x-api-key header", () => {
       const output = outputChunks.map((chunk) => decoder.decode(chunk)).join("");
       expect(output).toContain("partial");
       expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("without usageMetadata"));
+      const dataLines = output
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+      const closing = dataLines[dataLines.length - 1] as {
+        candidates?: Array<{ finishReason?: string; content?: { parts?: unknown[] } }>;
+        usageMetadata?: { totalTokenCount?: number };
+      };
+      expect(closing.candidates?.[0]?.finishReason).toBe("STOP");
+      expect(closing.candidates?.[0]?.content?.parts).toEqual([]);
+      expect(closing.usageMetadata?.totalTokenCount).toBe(0);
+    });
+
+    it("emits diagnostic text and STOP finishReason when a stream ends completely empty", async () => {
+      const store = createMockSignatureStore();
+      const transformer = createStreamingTransformer(store, defaultCallbacks);
+      const decoder = new TextDecoder();
+      const outputChunks: Uint8Array[] = [];
+
+      const writer = transformer.writable.getWriter();
+      const reader = transformer.readable.getReader();
+      const readPromise = (async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) outputChunks.push(value);
+        }
+      })();
+
+      await writer.close();
+      await readPromise;
+
+      const output = outputChunks.map((chunk) => decoder.decode(chunk)).join("");
+      const dataLines = output
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => JSON.parse(line.slice("data: ".length)) as {
+          candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }>;
+          usageMetadata?: { totalTokenCount?: number };
+        });
+      expect(dataLines).toHaveLength(1);
+      expect(dataLines[0]?.candidates?.[0]?.finishReason).toBe("STOP");
+      expect(dataLines[0]?.candidates?.[0]?.content?.parts?.[0]?.text).toContain("without emitting any content or finish reason");
+      expect(dataLines[0]?.usageMetadata?.totalTokenCount).toBe(0);
+    });
+
+    it("caches thinking signatures for Gemini 4 streaming responses", async () => {
+      const ssePayload = `data: ${JSON.stringify({
+        response: {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { text: "reasoning step", thought: true },
+                  { text: "", thoughtSignature: "sig_gemini4_abc123" },
+                  { text: "done" },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+        },
+      })}\n\n`;
+      const response = new Response(ssePayload, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+      const transformed = await transformAntigravityResponse(
+        response,
+        true,
+        undefined,
+        "antigravity-gemini-4-argon",
+        "test-project",
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+        "gemini-4-argon-high",
+        "session-g4-sig-test",
+      );
+      await transformed.text();
+      expect(getCachedSignature("session-g4-sig-test", "reasoning step")).toBe("sig_gemini4_abc123");
+      expect(debugModule.debugLogToFile).not.toHaveBeenCalledWith(expect.stringContaining("without usageMetadata"));
     });
 
     it("logs the real reason when the upstream stream errors mid-read", async () => {

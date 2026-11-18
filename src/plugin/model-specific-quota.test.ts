@@ -1,6 +1,16 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { AccountManager } from "./accounts";
 import type { OAuthAuthDetails } from "./types";
+
+vi.mock("./storage", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./storage")>();
+  return {
+    ...original,
+    saveAccounts: vi.fn().mockResolvedValue(undefined),
+    saveAccountsReplace: vi.fn().mockResolvedValue(undefined),
+    updateAccounts: vi.fn().mockResolvedValue(null),
+  };
+});
 
 describe("Model-specific Gemini quota", () => {
   let manager: AccountManager;

@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager, type ModelFamily, type HeaderStyle } from "./accounts";
 import type { AccountStorageV4 } from "./storage";
 
+vi.mock("./storage", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./storage")>();
+  return {
+    ...original,
+    saveAccounts: vi.fn().mockResolvedValue(undefined),
+    saveAccountsReplace: vi.fn().mockResolvedValue(undefined),
+    updateAccounts: vi.fn().mockResolvedValue(null),
+  };
+});
+
 /**
  * Test: Antigravity-first fallback logic
  * 

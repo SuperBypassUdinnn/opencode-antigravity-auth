@@ -264,11 +264,12 @@ export function transformSseLine(
 
     // A Google mid-stream error event parses but carries no response key. The
     // SDK schema strips unknown keys, so the error message would be dropped
-    // silently; rewrite it as a response whose text surfaces the cause.
+    // silently; rewrite it as a top-level Gemini response chunk so @ai-sdk/google
+    // reads both the error text and the STOP finishReason.
     const errorPayload = (parsed as { error?: unknown }).error;
     if (errorPayload !== undefined) {
       logSseAnomaly('upstream error event', json);
-      return `data: ${JSON.stringify({ response: synthesizeErrorResponse(errorPayload) })}`;
+      return `data: ${JSON.stringify(synthesizeErrorResponse(errorPayload))}`;
     }
   } catch (_) {
     logSseAnomaly('unparseable SSE line', json);
@@ -353,6 +354,45 @@ export function createStreamingTransformer(
   const sentThinkingBuffer = createThoughtBuffer();
   const debugState = { injected: false };
   let hasSeenUsageMetadata = false;
+  let hasSeenFinishReason = false;
+  let hasSeenCandidateContent = false;
+
+  const inspectTransformedLine = (line: string): void => {
+    if (!line.startsWith('data:')) {
+      return;
+    }
+    const json = line.slice(5).trim();
+    if (!json || json === '[DONE]') {
+      return;
+    }
+    if (!json.includes('"finishReason"') && !json.includes('"usageMetadata"') && !json.includes('"candidates"')) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(json) as {
+        usageMetadata?: unknown;
+        candidates?: Array<{
+          finishReason?: unknown;
+          content?: { parts?: unknown[] };
+        }>;
+      };
+      if (parsed.usageMetadata != null) {
+        hasSeenUsageMetadata = true;
+      }
+      if (Array.isArray(parsed.candidates)) {
+        for (const candidate of parsed.candidates) {
+          if (typeof candidate?.finishReason === 'string' && candidate.finishReason.length > 0) {
+            hasSeenFinishReason = true;
+          }
+          if (Array.isArray(candidate?.content?.parts) && candidate.content.parts.length > 0) {
+            hasSeenCandidateContent = true;
+          }
+        }
+      }
+    } catch (error) {
+      logSseAnomaly(`inspectTransformedLine parse error: ${describeStreamAbortReason(error)}`, json);
+    }
+  };
 
   return new TransformStream({
     transform(chunk, controller) {
@@ -362,11 +402,6 @@ export function createStreamingTransformer(
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        // Quick check for usage metadata presence in the raw line
-        if (line.includes('usageMetadata')) {
-          hasSeenUsageMetadata = true;
-        }
-
         const transformedLine = transformSseLine(
           line,
           signatureStore,
@@ -376,6 +411,7 @@ export function createStreamingTransformer(
           options,
           debugState,
         );
+        inspectTransformedLine(transformedLine);
         controller.enqueue(encoder.encode(transformedLine + '\n'));
       }
     },
@@ -383,9 +419,6 @@ export function createStreamingTransformer(
       buffer += decoder.decode();
 
       if (buffer) {
-        if (buffer.includes('usageMetadata')) {
-          hasSeenUsageMetadata = true;
-        }
         const transformedLine = transformSseLine(
           buffer,
           signatureStore,
@@ -395,22 +428,49 @@ export function createStreamingTransformer(
           options,
           debugState,
         );
+        inspectTransformedLine(transformedLine);
         controller.enqueue(encoder.encode(transformedLine));
       }
 
-      // Inject synthetic usage metadata if missing (fixes "Context % used: 0%" issue)
-      if (!hasSeenUsageMetadata) {
-        // A complete Google stream always ends with usageMetadata; reaching
-        // the flush without one means the upstream body was cut mid-stream.
+      // A complete Google stream ends with a candidate finishReason and usageMetadata.
+      // When an HTTP 200 SSE stream closes early without them, @ai-sdk/google falls
+      // back to finishReason "other", which OpenCode rejects as "unknown finish reason".
+      if (!hasSeenFinishReason) {
+        debugLogToFile(
+          hasSeenUsageMetadata
+            ? '[SseTransform] stream ended without finishReason; emitting synthetic STOP chunk'
+            : '[SseTransform] stream ended without usageMetadata or finishReason; upstream response was likely truncated mid-stream',
+        );
+        const closingChunk: Record<string, unknown> = {
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: hasSeenCandidateContent
+                  ? []
+                  : [{ text: '[Antigravity] Upstream stream ended without emitting any content or finish reason.' }],
+              },
+              finishReason: 'STOP',
+              index: 0,
+            },
+          ],
+        };
+        if (!hasSeenUsageMetadata) {
+          closingChunk.usageMetadata = {
+            promptTokenCount: 0,
+            candidatesTokenCount: 0,
+            totalTokenCount: 0,
+          };
+        }
+        controller.enqueue(encoder.encode(`\ndata: ${JSON.stringify(closingChunk)}\n\n`));
+      } else if (!hasSeenUsageMetadata) {
         debugLogToFile('[SseTransform] stream ended without usageMetadata; upstream response was likely truncated mid-stream');
         const syntheticUsage = {
-          response: {
-            usageMetadata: {
-              promptTokenCount: 0,
-              candidatesTokenCount: 0,
-              totalTokenCount: 0,
-            }
-          }
+          usageMetadata: {
+            promptTokenCount: 0,
+            candidatesTokenCount: 0,
+            totalTokenCount: 0,
+          },
         };
         controller.enqueue(encoder.encode(`\ndata: ${JSON.stringify(syntheticUsage)}\n\n`));
       }
