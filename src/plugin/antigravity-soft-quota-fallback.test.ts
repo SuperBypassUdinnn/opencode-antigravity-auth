@@ -4,6 +4,16 @@ import { AccountManager } from "./accounts.ts";
 import { getHealthTracker, initHealthTracker, initTokenTracker } from "./rotation.ts";
 import type { AccountStorageV4 } from "./storage.ts";
 
+vi.mock("./storage.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./storage.ts")>();
+  return {
+    ...original,
+    saveAccounts: vi.fn().mockResolvedValue(undefined),
+    saveAccountsReplace: vi.fn().mockResolvedValue(undefined),
+    updateAccounts: vi.fn().mockResolvedValue(null),
+  };
+});
+
 /**
  * The selection path skips accounts held back by the soft quota guard. If the
  * antigravity-first check keeps reporting such an account as available, every
@@ -32,7 +42,7 @@ describe("hasOtherAccountWithAntigravityAvailable soft quota", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-pro": { remainingFraction: 0.01, modelCount: 1 },
+      "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
     });
 
     const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
@@ -52,7 +62,7 @@ describe("hasOtherAccountWithAntigravityAvailable soft quota", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-pro": { remainingFraction: 0.5, modelCount: 1 },
+      "gemini-flash": { remainingFraction: 0.5, modelCount: 1 },
     });
 
     const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
@@ -72,7 +82,7 @@ describe("hasOtherAccountWithAntigravityAvailable soft quota", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-pro": { remainingFraction: 0.01, modelCount: 1 },
+      "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
     });
 
     const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
@@ -105,7 +115,7 @@ describe("getMinWaitTimeForFamily with a soft-quota-blocked pool", () => {
     manager.markRateLimited(accounts[0]!, 3_600_000, "gemini", "antigravity");
     manager.markRateLimited(accounts[1]!, 3_600_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-pro": { remainingFraction: 0.01, modelCount: 1 },
+      "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
     });
 
     const waitMs = manager.getMinWaitTimeForFamily("gemini", null, "antigravity", false);
@@ -160,7 +170,7 @@ describe("getMinWaitTimeForFamily sees every transient blocker", () => {
     manager.markRateLimited(accounts[0]!, 30_000, "gemini", "antigravity");
     manager.markRateLimited(accounts[1]!, 30_000, "gemini", "antigravity");
 
-    const waitMs = manager.getMinWaitTimeForFamily("gemini", "gemini-3-pro", "antigravity", true);
+    const waitMs = manager.getMinWaitTimeForFamily("gemini", "gemini-3.8-flash", "antigravity", true);
 
     expect(waitMs).toBeGreaterThan(0);
     expect(waitMs).toBeLessThanOrEqual(30_000);
@@ -172,13 +182,13 @@ describe("getMinWaitTimeForFamily sees every transient blocker", () => {
     const resetTime = new Date(Date.now() + 5 * 60_000).toISOString();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-pro": { remainingFraction: 0.01, modelCount: 1, resetTime },
+        "gemini-flash": { remainingFraction: 0.01, modelCount: 1, resetTime },
       });
     }
 
     const waitMs = manager.getMinWaitTimeForFamily(
       "gemini",
-      "gemini-3-pro",
+      "gemini-3.8-flash",
       "antigravity",
       false,
       () => true,
@@ -195,13 +205,13 @@ describe("getMinWaitTimeForFamily sees every transient blocker", () => {
     const accounts = manager.getAccounts();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-pro": { remainingFraction: 0.01, modelCount: 1 },
+        "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
       });
     }
 
     const waitMs = manager.getMinWaitTimeForFamily(
       "gemini",
-      "gemini-3-pro",
+      "gemini-3.8-flash",
       "antigravity",
       false,
       () => true,
@@ -526,10 +536,14 @@ describe("two-tier weekly soft quota priority", () => {
     expect(
       manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
     ).toBe(true);
+    // Gemini 4 Hydrogen shares the gemini-flash pool, so its weekly quota is protected identically.
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-4-hydrogen#high", 99),
+    ).toBe(true);
 
     const selected = manager.getCurrentOrNextForFamily(
       "gemini",
-      "antigravity-gemini-3.8-flash",
+      "antigravity-gemini-4-hydrogen#high",
       "hybrid",
       "antigravity",
       false,

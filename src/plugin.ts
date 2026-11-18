@@ -35,7 +35,6 @@ import {
 import { resolveModelWithTier } from "./plugin/transform/model-resolver";
 import {
   isEmptyResponseBody,
-  createSyntheticErrorResponse,
   createSyntheticGeminiErrorResponse,
 } from "./plugin/request-helpers";
 import { EmptyResponseError } from "./plugin/errors";
@@ -2901,9 +2900,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                         `license-bench: giving up (${licenseBenchedAccounts.size} distinct accounts; detail: ${bodyInfo.message ?? extracted.message ?? "unknown"})`,
                       );
                       const licenseMessage = `Google rejected this request with 403 PERMISSION_DENIED: ${bodyInfo.message ?? extracted.message ?? "product license missing"} ${licenseBenchedAccounts.size} account(s) lack the product license and were benched for ${Math.round(LICENSE_BENCH_MS / 3_600_000)}h, so no eligible account remains.`;
-                      const licenseSyntheticError =
-                        family === "gemini" ? createSyntheticGeminiErrorResponse : createSyntheticErrorResponse;
-                      return licenseSyntheticError(licenseMessage, prepared.requestedModel);
+                      // All Antigravity models (including Claude) are bound to @ai-sdk/google,
+                      // so synthetic responses must use the Gemini SSE chunk format.
+                      return createSyntheticGeminiErrorResponse(licenseMessage, prepared.requestedModel);
                     }
                     lastFailure = createFailureContext(response);
                     shouldSwitchAccount = true;
@@ -2927,12 +2926,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       `forbidden-403: giving up (${forbiddenAccounts.size} distinct accounts, ${forbiddenAttempts} attempts; detail: ${forbiddenDetail})`,
                     );
                     const forbiddenMessage = `Google rejected this request with 403 PERMISSION_DENIED: ${forbiddenDetail} The rejection repeated across ${forbiddenAccounts.size} distinct account(s) / ${forbiddenAttempts} attempts, so retrying cannot fix it.`;
-                    // A Gemini request needs Gemini-shaped SSE; an Anthropic
-                    // stream leaves the adapter without a finish reason and the
-                    // session retries instead of showing this text.
-                    const syntheticError =
-                      family === "gemini" ? createSyntheticGeminiErrorResponse : createSyntheticErrorResponse;
-                    return syntheticError(forbiddenMessage, prepared.requestedModel);
+                    // All Antigravity models (including Claude) use @ai-sdk/google;
+                    // emitting Anthropic SSE leaves the adapter without a finishReason
+                    // and triggers "unknown finish reason" retries.
+                    return createSyntheticGeminiErrorResponse(forbiddenMessage, prepared.requestedModel);
                   }
                 }
 
@@ -2985,9 +2982,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                         "warning"
                       );
                       const errorMessage = `[Antigravity Error] Context is too long for this model.\n\nPlease use /compact to reduce context size, then retry your request.\n\nAlternatively, you can:\n- Use /clear to start fresh\n- Use /undo to remove recent messages\n- Switch to a model with larger context window`;
-                      const syntheticError =
-                        family === "gemini" ? createSyntheticGeminiErrorResponse : createSyntheticErrorResponse;
-                      return syntheticError(errorMessage, prepared.requestedModel);
+                      return createSyntheticGeminiErrorResponse(errorMessage, prepared.requestedModel);
                     }
                   }
                 }

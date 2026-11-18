@@ -76,6 +76,24 @@ plugin applies to other Gemini 3 models. Collapsing happens only when the catalo
 publishes two or more tiers of the same base and no bare base ID, so a family
 that Google publishes directly is never rewritten.
 
+Gemini 4 Hydrogen follows the same rule with one extra tier: the catalog lists
+`gemini-4-hydrogen-low`, `-medium`, `-high`, and `-xhigh`, plus duplicate
+`-tiered-high` / `-tiered-xhigh` router entries that carry the same names. The
+duplicates are filtered out, so the plugin publishes exactly one model with four
+variants:
+
+```bash
+opencode run "Hello" --model=google/antigravity-gemini-4-hydrogen#xhigh
+```
+
+Tiers in this table are the ones the backend actually answers; `xhigh` is
+Google's "Extra" level and is only offered by families that publish it. OpenCode
+validates the variant's `thinkingConfig.thinkingLevel` against the Google
+provider's enum, which stops at `high`, so the `xhigh` variant carries its tier
+as a budget sentinel instead. The plugin maps that sentinel back to the `xhigh`
+level before the request leaves, and falls back to a published tier for any
+family that does not offer `xhigh`.
+
 ### Gemini 3 Pro Example
 
 ```json

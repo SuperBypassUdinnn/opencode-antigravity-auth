@@ -8,6 +8,7 @@
  */
 
 import type { RequestPayload, ThinkingConfig, ThinkingTier, GoogleSearchConfig } from "./types";
+import { isGeminiThinkingLevelModel } from "./model-resolver";
 
 /**
  * Transform a JSON Schema to Gemini-compatible format.
@@ -132,10 +133,10 @@ export function isGeminiModel(model: string): boolean {
 }
 
 /**
- * Check if a model is Gemini 3 (uses thinkingLevel string).
+ * Check if a model is Gemini 3 or later (uses a thinkingLevel string).
  */
 export function isGemini3Model(model: string): boolean {
-  return model.toLowerCase().includes("gemini-3");
+  return isGeminiThinkingLevelModel(model);
 }
 
 /**

@@ -82,7 +82,7 @@ describe("checkAccountsQuota", () => {
     // Gemini 4 Argon has its own weekly-only bucket, so it never merges into
     // the shared Gemini pool.
     expect(result?.quota?.groups["gemini-argon"]?.remainingFraction).toBe(0.75)
-    expect(result?.quota?.groups["gemini-pro"]).toBeUndefined()
+    expect((result?.quota?.groups as Record<string, unknown>)["gemini-pro"]).toBeUndefined()
     expect(result?.quota?.models?.["gemini-4-argon-high"]?.maxTokens).toBe(1048576)
 
     const modelsCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/v1internal:fetchAvailableModels"))
@@ -165,40 +165,38 @@ describe("aggregateQuota per-model entries", () => {
   it("records each model's own quota next to the group minimum", () => {
     const models = {
       "gemini-3.8-flash": { quotaInfo: { remainingFraction: 0.5, resetTime: "2030-01-01T00:00:00Z" } },
-      "gemini-3-pro": { quotaInfo: { remainingFraction: 0.05 } },
+      "gemini-4-hydrogen-high": { quotaInfo: { remainingFraction: 0.05 } },
     } as Parameters<typeof aggregateQuota>[0];
 
     const summary = aggregateQuota(models);
 
     const flash = summary.groups["gemini-flash"];
-    expect(flash?.remainingFraction).toBe(0.5);
+    expect(flash?.remainingFraction).toBe(0.05);
     expect(flash?.models?.["gemini-3.8-flash"]?.remainingFraction).toBe(0.5);
     expect(flash?.models?.["gemini-3.8-flash"]?.resetTime).toBe("2030-01-01T00:00:00Z");
-
-    const pro = summary.groups["gemini-pro"];
-    expect(pro?.remainingFraction).toBe(0.05);
-    expect(pro?.models?.["gemini-3-pro"]?.remainingFraction).toBe(0.05);
-    expect(pro?.models?.["gemini-3-pro"]?.resetTime).toBeUndefined();
+    expect(flash?.models?.["gemini-4-hydrogen-high"]?.remainingFraction).toBe(0.05);
+    expect(flash?.models?.["gemini-4-hydrogen-high"]?.resetTime).toBeUndefined();
   });
 
   it("keeps a quota-less model's entry without a remaining fraction", () => {
     const models = {
       "gemini-3.8-flash": { quotaInfo: { remainingFraction: 0.4 } },
-      "gemini-3.8-pro": {},
+      "gemini-4-hydrogen-high": {},
     } as Parameters<typeof aggregateQuota>[0];
 
     const summary = aggregateQuota(models);
 
-    const pro = summary.groups["gemini-pro"];
-    expect(pro?.remainingFraction).toBeUndefined();
-    expect(pro?.models?.["gemini-3.8-pro"]?.remainingFraction).toBeUndefined();
-    expect(summary.groups["gemini-flash"]?.models?.["gemini-3.8-flash"]?.remainingFraction).toBe(0.4);
+    const flash = summary.groups["gemini-flash"];
+    expect(flash?.remainingFraction).toBe(0.4);
+    expect(flash?.models?.["gemini-4-hydrogen-high"]?.remainingFraction).toBeUndefined();
+    expect(flash?.models?.["gemini-3.8-flash"]?.remainingFraction).toBe(0.4);
   });
 
   it("keeps gemini-4-argon in its own weekly-only group", () => {
     const models = {
       "gemini-4-argon-high": { quotaInfo: { remainingFraction: 0.25, resetTime: "2030-01-05T00:00:00Z" } },
-      "gemini-3-pro": { quotaInfo: { remainingFraction: 0.9 } },
+      "gemini-pro-orchestrator-g1-pro": { quotaInfo: { remainingFraction: 0.3 } },
+      "gemini-4-hydrogen-high": { quotaInfo: { remainingFraction: 0.9 } },
     } as Parameters<typeof aggregateQuota>[0];
 
     const summary = aggregateQuota(models);
@@ -206,8 +204,10 @@ describe("aggregateQuota per-model entries", () => {
     const argon = summary.groups["gemini-argon"];
     expect(argon?.remainingFraction).toBe(0.25);
     expect(argon?.models?.["gemini-4-argon-high"]?.resetTime).toBe("2030-01-05T00:00:00Z");
+    expect(argon?.models?.["gemini-pro-orchestrator-g1-pro"]?.remainingFraction).toBe(0.3);
     // The shared Gemini pool must not inherit argon's exhausted-looking minimum.
-    expect(summary.groups["gemini-pro"]?.remainingFraction).toBe(0.9);
-    expect(summary.groups["gemini-pro"]?.models?.["gemini-4-argon-high"]).toBeUndefined();
+    expect(summary.groups["gemini-flash"]?.remainingFraction).toBe(0.9);
+    expect(summary.groups["gemini-flash"]?.models?.["gemini-4-argon-high"]).toBeUndefined();
+    expect(summary.groups["gemini-flash"]?.models?.["gemini-pro-orchestrator-g1-pro"]).toBeUndefined();
   });
 });

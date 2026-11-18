@@ -90,7 +90,6 @@ export async function registerAccountManagement(
           const isProAccount = isProQuotaGroup(groups)
 
           for (const [group, quota] of Object.entries(groups)) {
-            if (group === "gemini-pro") continue
             if (isProAccount && (group === "claude" || group === "gemini-flash")) {
               const weeklyData = quota.weeklyRemainingFraction !== undefined || quota.weeklyResetTime
                 ? { remainingFraction: quota.weeklyRemainingFraction, resetTime: quota.weeklyResetTime }

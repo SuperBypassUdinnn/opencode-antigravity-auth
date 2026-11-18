@@ -604,6 +604,12 @@ function normalizeAccountStorage(
     }
   }
 
+  for (const account of accounts) {
+    if (account.cachedQuota && "gemini-pro" in account.cachedQuota) {
+      delete account.cachedQuota["gemini-pro"];
+    }
+  }
+
   return { version: 4, accounts, activeIndex, activeIndexByFamily };
 }
 

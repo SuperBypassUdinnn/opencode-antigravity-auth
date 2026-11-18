@@ -4,12 +4,16 @@ import {
   isCatalogThinkingModel,
   registerCatalogThinkingModelIds,
   applyTierModelSuffix,
+  publishedTierFor,
+  budgetToGemini3Level,
   isAdvertisedTierSuffixModel,
   registerTierSuffixModelBases,
   resolveModelWithTier,
   resolveModelWithVariant,
   resolveModelForHeaderStyle,
+  getModelFamily,
 } from "./model-resolver";
+import { XHIGH_TIER_BUDGET } from "../config/models";
 
 describe("resolveModelWithTier", () => {
   describe("Gemini 3 flash models (Issue #109)", () => {
@@ -245,6 +249,19 @@ describe("resolveModelWithVariant", () => {
       expect(result.thinkingLevel).toBeUndefined();
       expect(result.configSource).toBe("variant");
     });
+
+    it("maps the xhigh sentinel only for families that publish the tier", () => {
+      const hydrogen = resolveModelWithVariant("antigravity-gemini-4-hydrogen", {
+        thinkingBudget: XHIGH_TIER_BUDGET,
+      });
+      expect(hydrogen.actualModel).toBe("gemini-4-hydrogen");
+      expect(hydrogen.thinkingLevel).toBe("xhigh");
+
+      const flash = resolveModelWithVariant("antigravity-gemini-3.8-flash", {
+        thinkingBudget: XHIGH_TIER_BUDGET,
+      });
+      expect(flash.thinkingLevel).toBe("low");
+    });
   });
 
   describe("backward compatibility", () => {
@@ -411,6 +428,15 @@ describe("tiered catalog families", () => {
     expect(applyTierModelSuffix("claude-sonnet-4-6", "high")).toBe("claude-sonnet-4-6");
   });
 
+  it("rewrites the Gemini 4 Hydrogen tiers, including xhigh", () => {
+    expect(applyTierModelSuffix("gemini-4-hydrogen", "low")).toBe("gemini-4-hydrogen-low");
+    expect(applyTierModelSuffix("gemini-4-hydrogen", "medium")).toBe("gemini-4-hydrogen-medium");
+    expect(applyTierModelSuffix("gemini-4-hydrogen", "high")).toBe("gemini-4-hydrogen-high");
+    expect(applyTierModelSuffix("gemini-4-hydrogen", "xhigh")).toBe("gemini-4-hydrogen-xhigh");
+    expect(applyTierModelSuffix("antigravity-gemini-4-hydrogen", "xhigh")).toBe("antigravity-gemini-4-hydrogen-xhigh");
+    expect(applyTierModelSuffix("gemini-4-hydrogen-high", "xhigh")).toBe("gemini-4-hydrogen-xhigh");
+  });
+
   it("registers additional families discovered from the catalog", () => {
     registerTierSuffixModelBases([
       ["gemini-9-flash", ["minimal", "low", "high"]],
@@ -422,12 +448,62 @@ describe("tiered catalog families", () => {
   });
 });
 
+describe("published tier guard", () => {
+  it("keeps a published level and falls back for one the family omits", () => {
+    expect(publishedTierFor("gemini-4-hydrogen", "xhigh")).toBe("xhigh");
+    expect(publishedTierFor("antigravity-gemini-4-hydrogen", "medium")).toBe("medium");
+    // 3.8 Flash stops at high, so the xhigh sentinel must not reach the backend.
+    expect(publishedTierFor("gemini-3.8-flash", "xhigh")).toBe("low");
+    expect(publishedTierFor("gemini-3.8-flash", "minimal")).toBe("low");
+  });
+
+  it("passes through for families the catalog does not collapse", () => {
+    expect(publishedTierFor("gemini-3-flash", "medium")).toBe("medium");
+    // No published xhigh family, so the sentinel level is clamped to high.
+    expect(publishedTierFor("gemini-3-flash", "xhigh")).toBe("high");
+    expect(publishedTierFor("claude-sonnet-4-6", undefined)).toBeUndefined();
+  });
+});
+
+describe("budget to level mapping", () => {
+  it("maps the xhigh sentinel and the legacy thresholds", () => {
+    expect(budgetToGemini3Level(XHIGH_TIER_BUDGET)).toBe("xhigh");
+    expect(budgetToGemini3Level(XHIGH_TIER_BUDGET + 1)).toBe("xhigh");
+    expect(budgetToGemini3Level(8192)).toBe("low");
+    expect(budgetToGemini3Level(16384)).toBe("medium");
+    expect(budgetToGemini3Level(32768)).toBe("high");
+  });
+});
+
 describe("catalog thinking registry", () => {
   it("marks registered models as thinking-capable with or without the quota prefix", () => {
-    registerCatalogThinkingModelIds(["claude-sonnet-9-9"]);
+    registerCatalogThinkingModelIds(["claude-sonnet-9-9", "claude-opus-9-9-high"]);
     expect(isCatalogThinkingModel("claude-sonnet-9-9")).toBe(true);
     expect(isCatalogThinkingModel("antigravity-claude-sonnet-9-9")).toBe(true);
     expect(isCatalogThinkingModel("claude-sonnet-9-9-high")).toBe(true);
+    expect(isCatalogThinkingModel("claude-opus-9-9")).toBe(true);
+    expect(isCatalogThinkingModel("claude-opus-9-9-low")).toBe(true);
     expect(isCatalogThinkingModel("claude-unregistered-9-9")).toBe(false);
+  });
+});
+
+describe("getModelFamily", () => {
+  it("classifies claude models", () => {
+    expect(getModelFamily("claude-sonnet-4-6")).toBe("claude");
+    expect(getModelFamily("antigravity-claude-opus-5-5-high")).toBe("claude");
+  });
+
+  it("classifies argon and orchestrator models", () => {
+    expect(getModelFamily("gemini-4-argon-high")).toBe("gemini-argon");
+    expect(getModelFamily("antigravity-gemini-4-argon")).toBe("gemini-argon");
+    expect(getModelFamily("gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
+  });
+
+  it("classifies all remaining gemini models as gemini-flash", () => {
+    expect(getModelFamily("gemini-3.8-flash")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-4-hydrogen")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-4-hydrogen-high")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-2.5-pro")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-3-flash")).toBe("gemini-flash");
   });
 });

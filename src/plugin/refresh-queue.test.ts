@@ -6,6 +6,15 @@ import type { OAuthAuthDetails, PluginClient } from "./types";
 import { refreshAccessToken } from "./token";
 
 vi.mock("./token", () => ({ refreshAccessToken: vi.fn() }));
+vi.mock("./storage", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./storage")>();
+  return {
+    ...original,
+    saveAccounts: vi.fn().mockResolvedValue(undefined),
+    saveAccountsReplace: vi.fn().mockResolvedValue(undefined),
+    updateAccounts: vi.fn().mockResolvedValue(null),
+  };
+});
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 

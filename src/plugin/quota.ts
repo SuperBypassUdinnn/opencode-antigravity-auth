@@ -9,7 +9,7 @@ import { accessTokenExpired, formatRefreshParts, parseRefreshParts } from "./aut
 import { logQuotaFetch, logQuotaStatus, debugLogToFile } from "./debug";
 import { ensureProjectContext } from "./project";
 import { refreshAccessToken } from "./token";
-import { getModelFamily } from "./transform/model-resolver";
+
 import type { PluginClient, OAuthAuthDetails } from "./types";
 import type { AccountMetadataV3 } from "./storage";
 
@@ -23,7 +23,16 @@ const FETCH_TIMEOUT_MS = 10000;
  */
 const SWEEP_BUDGET_MS = 20000;
 
-export type QuotaGroup = "claude" | "gemini-pro" | "gemini-flash" | "gemini-argon";
+/**
+ * Independent backend quota buckets. Claude, the shared "Gemini Models" pool,
+ * and Gemini 4 Argon (which also serves the Orchestrator planner) each refill
+ * on their own windows.
+ *
+ * `gemini-flash` is the shared pool, not a Flash-only bucket: Flash, Hydrogen,
+ * and the Orchestrator worker all draw from it, so every non-Argon Gemini model
+ * must be classified here.
+ */
+export type QuotaGroup = "claude" | "gemini-flash" | "gemini-argon";
 
 export interface QuotaModelSummary {
   remainingFraction?: number;
@@ -153,11 +162,14 @@ function parseResetTime(resetTime?: string): number | null {
 /**
  * Gemini 4 Argon draws from its own weekly-only bucket, separate from the
  * shared Gemini pool (see Google's account dashboard), so its quota must not be
- * min-merged into the pro or flash groups. Model names and display names are
- * both checked, and callers must keep the claude branch ahead of this one.
+ * min-merged into the shared group. The Orchestrator planner bills that same
+ * bucket but its model ID (`gemini-pro-orchestrator-g1-pro`) carries no "argon"
+ * substring, so "orchestrator" is matched too. Model names and display names
+ * are both checked, and callers must keep the claude branch ahead of this one.
  */
 export function isArgonModelName(value: string): boolean {
-  return value.toLowerCase().includes("argon");
+  const lower = value.toLowerCase();
+  return lower.includes("argon") || lower.includes("orchestrator");
 }
 
 function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup | null {
@@ -171,8 +183,9 @@ function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup
   if (isArgonModelName(combined)) {
     return "gemini-argon";
   }
-  const family = getModelFamily(modelName);
-  return family === "gemini-flash" ? "gemini-flash" : "gemini-pro";
+  // Every remaining Gemini model (Flash, Hydrogen, the Orchestrator worker)
+  // refills from the shared "Gemini Models" pool.
+  return "gemini-flash";
 }
 
 export function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>, selectable?: Set<string>): QuotaSummary {

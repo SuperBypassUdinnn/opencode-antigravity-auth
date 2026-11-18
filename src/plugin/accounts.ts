@@ -365,7 +365,7 @@ function modelForQuotaKey(key: QuotaKey): string | null {
  * When a model string is available, we can precisely determine the quota group.
  * When model is null/undefined, we fall back based on family:
  * - Claude → "claude" quota group
- * - Gemini → "gemini-pro" (conservative fallback; may misclassify flash models)
+ * - Gemini → "gemini-flash" (the shared "Gemini Models" pool)
  * 
  * @param family - The model family ("claude" | "gemini")
  * @param model - Optional model string for precise resolution
@@ -375,18 +375,18 @@ export function resolveQuotaGroup(family: ModelFamily, model?: string | null): Q
   if (model) {
     // Claude keeps its own branch first (mirroring classifyQuotaGroup), so an
     // unusual claude id can never be read against the argon bucket.
-    const modelFamily = getModelFamily(model);
-    if (modelFamily === "claude") {
+    if (getModelFamily(model) === "claude") {
       return "claude";
     }
-    // Gemini 4 Argon has its own weekly-only bucket, separate from the shared
-    // Gemini pool, so its quota reads must not fall through to gemini-pro.
+    // Gemini 4 Argon and the Orchestrator planner draw from their own
+    // weekly-only bucket; every other Gemini model (Flash, Hydrogen, the
+    // Orchestrator worker) uses the shared "Gemini Models" pool.
     if (isArgonModelName(model)) {
       return "gemini-argon";
     }
-    return modelFamily;
+    return "gemini-flash";
   }
-  return family === "claude" ? "claude" : "gemini-pro";
+  return family === "claude" ? "claude" : "gemini-flash";
 }
 
 /** Candidate keys for a requested model in the per-model quota map: the raw
@@ -397,10 +397,10 @@ function quotaModelCandidates(model?: string | null): string[] {
   if (!model) return [];
   const lower = model.toLowerCase();
   const prefixStripped = lower.replace(/^antigravity-/i, "");
-  const tierMatch = prefixStripped.match(/-(minimal|low|medium|high|tiered)$/i);
+  const tierMatch = prefixStripped.match(/-(minimal|low|medium|high|xhigh|tiered)$/i);
   const ownTier = tierMatch?.[1] ? `-${tierMatch[1].toLowerCase()}` : undefined;
   const base = prefixStripped
-    .replace(/-(minimal|low|medium|high|tiered)$/i, "")
+    .replace(/-(minimal|low|medium|high|xhigh|tiered)$/i, "")
     .replace(/-preview$/i, "");
   // The cache stores the tier-suffixed names the backend reports (e.g.
   // gemini-3.8-flash-high), so a bare request must also try the tier
@@ -408,7 +408,7 @@ function quotaModelCandidates(model?: string | null): string[] {
   // and -high leads the defaults because bare gemini-3 requests resolve
   // to the high tier in practice.
   const candidates = [model, lower, prefixStripped, base];
-  for (const tier of [...(ownTier ? [ownTier] : []), "-high", "-medium", "-low", "-minimal", "-tiered"]) {
+  for (const tier of [...(ownTier ? [ownTier] : []), "-high", "-medium", "-low", "-minimal", "-xhigh", "-tiered"]) {
     candidates.push(`${base}${tier}`);
   }
   return [...new Set(candidates)];
@@ -2004,9 +2004,7 @@ export class AccountManager {
     quotaGroups: Partial<Record<QuotaGroup, QuotaGroupSummary>>,
   ): boolean {
     const claudeAvailable = groupHasAvailableQuota(quotaGroups.claude);
-    const sharedGeminiAvailable =
-      groupHasAvailableQuota(quotaGroups["gemini-pro"]) ||
-      groupHasAvailableQuota(quotaGroups["gemini-flash"]);
+    const sharedGeminiAvailable = groupHasAvailableQuota(quotaGroups["gemini-flash"]);
     const argonAvailable = groupHasAvailableQuota(quotaGroups["gemini-argon"]);
     const geminiAvailable = sharedGeminiAvailable || argonAvailable;
     if (!claudeAvailable && !geminiAvailable) {

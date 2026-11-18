@@ -24,6 +24,7 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       "antigravity-gemini-3.1-pro",
       "antigravity-gemini-3.8-flash",
       "antigravity-gemini-4-argon",
+      "antigravity-gemini-4-hydrogen",
       "gemini-2.5-flash",
       "gemini-2.5-pro",
       "gemini-3-flash-preview",
@@ -49,6 +50,15 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       low: { thinkingLevel: "low" },
       medium: { thinkingLevel: "medium" },
       high: { thinkingLevel: "high" },
+    });
+  });
+
+  it("defines the full Gemini 4 Hydrogen tier set, including xhigh", () => {
+    expect(getModel("antigravity-gemini-4-hydrogen").variants).toEqual({
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+      xhigh: { thinkingLevel: "xhigh" },
     });
   });
 
