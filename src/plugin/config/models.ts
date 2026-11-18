@@ -1,6 +1,15 @@
 import type { ProviderModel } from "../types";
 
-export type ModelThinkingLevel = "minimal" | "low" | "medium" | "high";
+export type ModelThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/**
+ * Thinking budget that stands in for the `xhigh` tier on the providerOptions
+ * channel. OpenCode validates providerOptions.google.thinkingConfig.thinkingLevel
+ * against @ai-sdk/google's enum, which stops at "high", so a variant cannot name
+ * the highest tier there. The plugin emits this budget instead and maps it back
+ * to the "xhigh" level for the Antigravity request, where the backend accepts it.
+ */
+export const XHIGH_TIER_BUDGET = 65536;
 
 export interface ModelThinkingConfig {
   thinkingBudget: number;
@@ -104,6 +113,21 @@ export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = {
       low: { thinkingLevel: "low" },
       medium: { thinkingLevel: "medium" },
       high: { thinkingLevel: "high" },
+    },
+  },
+  // The catalog advertises Gemini 4 Hydrogen as four per-tier IDs
+  // (gemini-4-hydrogen-low/medium/high/xhigh) and a disabled bare ID. The
+  // plugin publishes one model and rewrites the backend ID from the variant.
+  "antigravity-gemini-4-hydrogen": {
+    name: "Gemini 4 Hydrogen (Antigravity)",
+    limit: { context: 1048576, output: 262144 },
+    modalities: DEFAULT_MODALITIES,
+    proTier: true,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+      xhigh: { thinkingLevel: "xhigh" },
     },
   },
   "antigravity-claude-sonnet-5-5": {

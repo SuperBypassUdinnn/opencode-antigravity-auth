@@ -740,7 +740,9 @@ export function isThinkingCapableModel(modelName: string): boolean {
   const lowerModel = modelName.toLowerCase();
   return lowerModel.includes("thinking")
     || lowerModel.includes("gemini-3")
-    || lowerModel.includes("opus");
+    || lowerModel.includes("gemini-4")
+    || lowerModel.includes("opus")
+    || lowerModel.includes("claude-sonnet-5-5");
 }
 
 /**
@@ -789,7 +791,7 @@ export function extractThinkingConfig(
  * Variant thinking config extracted from OpenCode's providerOptions.
  */
 export interface VariantThinkingConfig {
-  /** Gemini 3 native thinking level (low/medium/high) */
+  /** Gemini 3 native thinking level (low/medium/high; xhigh arrives as a budget sentinel) */
   thinkingLevel?: string;
   /** Numeric thinking budget for Claude and Gemini 2.5 */
   thinkingBudget?: number;

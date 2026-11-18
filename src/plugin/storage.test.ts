@@ -708,6 +708,37 @@ describe("Storage Migration", () => {
       );
       expect(gitignoreCall).toBeDefined();
     });
+
+    it("strips legacy gemini-pro from cachedQuota on load", async () => {
+      const v4Data = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            addedAt: now,
+            lastUsed: now,
+            cachedQuota: {
+              "gemini-pro": { remainingFraction: 0.8, modelCount: 1 },
+              "gemini-flash": { remainingFraction: 0.9, modelCount: 1 },
+            },
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      vi.mocked(fs.readFile).mockImplementation((path) => {
+        if ((path as string).endsWith(".gitignore")) {
+          const error = new Error("ENOENT") as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          return Promise.reject(error);
+        }
+        return Promise.resolve(JSON.stringify(v4Data));
+      });
+
+      const result = await loadAccounts();
+      expect(result?.accounts[0]?.cachedQuota?.["gemini-pro"]).toBeUndefined();
+      expect(result?.accounts[0]?.cachedQuota?.["gemini-flash"]).toBeDefined();
+    });
   });
 
   describe("ensureGitignore", () => {

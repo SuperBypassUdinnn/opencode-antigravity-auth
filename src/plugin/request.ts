@@ -66,9 +66,12 @@ import {
   resolveModelWithVariant,
   resolveModelForHeaderStyle,
   applyTierModelSuffix,
+  publishedTierFor,
+  budgetToGemini3Level,
   isClaudeModel,
   isClaudeThinkingModel,
   isCatalogThinkingModel,
+  THINKING_TIER_BUDGETS,
   CLAUDE_THINKING_MAX_OUTPUT_TOKENS,
   type ThinkingTier,
 } from "./transform";
@@ -109,9 +112,9 @@ function buildSignatureSessionKey(
 function shouldCacheThinkingSignatures(model?: string): boolean {
   if (typeof model !== "string") return false;
   const lower = model.toLowerCase();
-  // Both Claude and Gemini 3 models require thought signature caching
+  // Both Claude and Gemini 3/4 models require thought signature caching
   // for multi-turn conversations with function calling
-  return lower.includes("claude") || lower.includes("gemini-3");
+  return lower.includes("claude") || isGemini3Model(lower);
 }
 
 function hashConversationSeed(seed: string): string {
@@ -879,10 +882,11 @@ export function prepareAntigravityRequest(
 
   const isClaude = isClaudeModel(resolved.actualModel);
   const isClaudeThinking = isClaudeThinkingModel(resolved.actualModel);
+  const isClaude55Series = /^claude-(?:sonnet|opus)-5-5(?:$|-)/i.test(effectiveModel);
   // Catalog-driven capability: Google's catalog marks thinking models via the
-  // displayName (e.g. "Claude Sonnet 4.6 (Thinking)"), whose id carries no
-  // -thinking suffix. Treat catalog-marked claude models as thinking models.
-  const isClaudeThinkingCapable = isClaude && (isClaudeThinking || isCatalogThinkingModel(effectiveModel));
+  // displayName (e.g. "Claude Sonnet 4.6 (Thinking)") or supportsThinking
+  // (e.g. Claude 5.5 tiers). Treat catalog-marked and 5.5 claude models as thinking models.
+  const isClaudeThinkingCapable = isClaude && (isClaudeThinking || isCatalogThinkingModel(effectiveModel) || isClaude55Series);
   const keepThinkingEnabled = getKeepThinking();
   const enableClaudePromptAutoCaching = options?.claudePromptAutoCaching ?? false;
 
@@ -937,7 +941,7 @@ export function prepareAntigravityRequest(
         const conversationKey = resolveConversationKeyFromRequests(requestObjects);
         // Strip tier suffix from model for cache key to prevent cache misses on tier change
         // e.g., "claude-opus-4-6-thinking-high" -> "claude-opus-4-6-thinking"
-        const modelForCacheKey = effectiveModel.replace(/-(minimal|low|medium|high)$/i, "");
+        const modelForCacheKey = effectiveModel.replace(/-(minimal|low|medium|high|xhigh)$/i, "");
         signatureSessionKey = buildSignatureSessionKey(PLUGIN_SESSION_ID, modelForCacheKey, conversationKey, resolveProjectKey(parsedBody.project));
 
         if (requestObjects.length > 0) {
@@ -997,20 +1001,33 @@ export function prepareAntigravityRequest(
           requestPayload.providerOptions as Record<string, unknown> | undefined,
           rawGenerationConfig
         );
-        const isGemini3 = effectiveModel.toLowerCase().includes("gemini-3");
+        const isGemini3 = isGemini3Model(effectiveModel);
 
         log.debug(`[ThinkingResolution] rawModel=${rawModel} resolvedModel=${effectiveModel} resolvedTier=${tierThinkingLevel ?? "none"} variantLevel=${variantConfig?.thinkingLevel ?? "none"} variantBudget=${variantConfig?.thinkingBudget ?? "none"} providerOptions.google=${JSON.stringify((requestPayload.providerOptions as any)?.google ?? null)} generationConfig.thinkingConfig=${JSON.stringify((rawGenerationConfig as any)?.thinkingConfig ?? null)}`);
 
         if (variantConfig?.thinkingLevel && isGemini3) {
-          // Gemini 3 native format - use thinkingLevel directly
+          // Gemini 3/4 native format - use thinkingLevel directly
           tierThinkingLevel = variantConfig.thinkingLevel;
           tierThinkingBudget = undefined;
+        } else if (variantConfig?.thinkingLevel) {
+          // Collapsed non-Gemini families (e.g. Claude 5.5 low/medium/high) carry
+          // their selected variant in thinkingLevel so applyTierModelSuffix picks
+          // the right backend ID; map the tier to Claude's thinking budget too.
+          tierThinkingLevel = variantConfig.thinkingLevel;
+          if (isClaudeThinkingCapable) {
+            const budgetTier = variantConfig.thinkingLevel === "xhigh" ? "high" : variantConfig.thinkingLevel;
+            const claudeBudgets = THINKING_TIER_BUDGETS.claude as Record<string, number>;
+            tierThinkingBudget = claudeBudgets[budgetTier] ?? THINKING_TIER_BUDGETS.claude.high;
+          }
         } else if (variantConfig?.thinkingBudget) {
           if (isGemini3) {
-            // Legacy format for Gemini 3 - convert with deprecation warning
-            log.warn("[Deprecated] Using thinkingBudget for Gemini 3 model. Use thinkingLevel instead.");
-            tierThinkingLevel = variantConfig.thinkingBudget <= 8192 ? "low"
-              : variantConfig.thinkingBudget <= 16384 ? "medium" : "high";
+            const level = budgetToGemini3Level(variantConfig.thinkingBudget);
+            // The xhigh tier rides this channel on purpose (see XHIGH_TIER_BUDGET);
+            // only a genuine numeric budget is the deprecated legacy shape.
+            if (level !== "xhigh") {
+              log.warn("[Deprecated] Using thinkingBudget for Gemini 3 model. Use thinkingLevel instead.");
+            }
+            tierThinkingLevel = level;
             tierThinkingBudget = undefined;
           } else {
             // Claude / Gemini 2.5 - use budget directly
@@ -1024,6 +1041,9 @@ export function prepareAntigravityRequest(
           // publishes per tier (e.g. gemini-3.8-flash); its bare base ID is not a
           // valid model and is rejected with 404.
           effectiveModel = applyTierModelSuffix(effectiveModel, tierThinkingLevel);
+          // Keep the thinking level on a tier the family actually publishes, so
+          // the xhigh sentinel never lands on a family that stops at high.
+          tierThinkingLevel = publishedTierFor(effectiveModel, tierThinkingLevel);
         }
 
         if (isClaude) {
@@ -1094,8 +1114,10 @@ export function prepareAntigravityRequest(
             effectiveUserThinkingConfig,
             isClaudeSonnetNonThinking
               ? false
-              : (isCatalogThinkingModel(effectiveModel) ||
-                (resolved.isThinkingModel ?? isThinkingCapableModel(effectiveModel))),
+              : (isClaudeThinkingCapable ||
+                isCatalogThinkingModel(effectiveModel) ||
+                Boolean(resolved.isThinkingModel) ||
+                isThinkingCapableModel(effectiveModel)),
             isClaude,
             hasAssistantHistory,
           );
@@ -1117,7 +1139,7 @@ export function prepareAntigravityRequest(
                   : {}),
               };
             } else if (tierThinkingLevel) {
-              // Gemini 3 uses thinkingLevel string (low/medium/high)
+              // Gemini 3 and later use a thinkingLevel string (low/medium/high/xhigh)
               thinkingConfig = {
                 includeThoughts: normalizedThinking.includeThoughts,
                 thinkingLevel: tierThinkingLevel,

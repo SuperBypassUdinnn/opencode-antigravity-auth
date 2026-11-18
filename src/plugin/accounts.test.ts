@@ -1880,7 +1880,7 @@ describe("AccountManager", () => {
             lastUsed: 0,
             rateLimitResetTimes: {
               "gemini-antigravity": 10_000_000,
-              "gemini-antigravity:gemini-3.8-pro-high": 10_000_000,
+              "gemini-antigravity:gemini-4-hydrogen-high": 10_000_000,
             },
           },
         ],
@@ -1889,12 +1889,12 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       manager.updateQuotaCache(0, {
-        "gemini-pro": { remainingFraction: 0, modelCount: 1 },
+        "gemini-flash": { remainingFraction: 0, modelCount: 1 },
       });
 
       expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({
         "gemini-antigravity": 10_000_000,
-        "gemini-antigravity:gemini-3.8-pro-high": 10_000_000,
+        "gemini-antigravity:gemini-4-hydrogen-high": 10_000_000,
       });
     });
 
@@ -1909,7 +1909,7 @@ describe("AccountManager", () => {
             lastUsed: 0,
             rateLimitResetTimes: {
               "gemini-antigravity": 10_000_000,
-              "gemini-antigravity:gemini-3.8-pro-high": 10_000_000,
+              "gemini-antigravity:gemini-4-hydrogen-high": 10_000_000,
             },
           },
         ],
@@ -1918,13 +1918,18 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       manager.updateQuotaCache(0, {
-        "gemini-pro": { remainingFraction: 0, modelCount: 1 },
-        "gemini-flash": { remainingFraction: 1, modelCount: 1 },
+        "gemini-flash": {
+          remainingFraction: 1,
+          modelCount: 1,
+          models: {
+            "gemini-4-hydrogen-high": { remainingFraction: 0 },
+          },
+        },
       });
 
       const account = manager.getAccounts()[0]!;
       expect(account.rateLimitResetTimes["gemini-antigravity"]).toBeUndefined();
-      expect(account.rateLimitResetTimes["gemini-antigravity:gemini-3.8-pro-high"]).toBe(10_000_000);
+      expect(account.rateLimitResetTimes["gemini-antigravity:gemini-4-hydrogen-high"]).toBe(10_000_000);
     });
 
     it("clears the Claude marker when Claude quota is available", () => {
@@ -2261,12 +2266,15 @@ describe("license bench (SUBSCRIPTION_REQUIRED)", () => {
 describe("resolveQuotaGroup", () => {
   it("returns model-based quota group when model is provided", () => {
     expect(resolveQuotaGroup("claude", "claude-opus-4-6-thinking")).toBe("claude");
-    expect(resolveQuotaGroup("gemini", "gemini-2.5-pro")).toBe("gemini-pro");
+    expect(resolveQuotaGroup("gemini", "gemini-2.5-pro")).toBe("gemini-flash");
     expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
-    // Gemini 4 Argon draws from its own weekly-only bucket.
+    expect(resolveQuotaGroup("gemini", "gemini-4-hydrogen-high")).toBe("gemini-flash");
+    // Gemini 4 Argon and Orchestrator draw from their own weekly-only bucket.
     expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini-argon");
     expect(resolveQuotaGroup("gemini", "antigravity-gemini-4-argon")).toBe("gemini-argon");
-    // Claude keeps its own branch even if the id mentions argon.
+    expect(resolveQuotaGroup("gemini", "gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
+    expect(resolveQuotaGroup("gemini", "antigravity-gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
+    // Claude keeps its own branch even if the id mentions argon or orchestrator.
     expect(resolveQuotaGroup("claude", "claude-argon-x")).toBe("claude");
   });
 
@@ -2275,15 +2283,15 @@ describe("resolveQuotaGroup", () => {
     expect(resolveQuotaGroup("claude", undefined)).toBe("claude");
   });
 
-  it("falls back to gemini-pro for gemini family when no model", () => {
-    expect(resolveQuotaGroup("gemini", null)).toBe("gemini-pro");
-    expect(resolveQuotaGroup("gemini", undefined)).toBe("gemini-pro");
+  it("falls back to gemini-flash for gemini family when no model", () => {
+    expect(resolveQuotaGroup("gemini", null)).toBe("gemini-flash");
+    expect(resolveQuotaGroup("gemini", undefined)).toBe("gemini-flash");
   });
 
   it("model takes precedence over family", () => {
     // Even if family says claude, model determines the quota group
     expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
-    expect(resolveQuotaGroup("gemini", "gemini-3-pro")).toBe("gemini-pro");
+    expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini-argon");
   });
 });
 

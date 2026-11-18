@@ -6,6 +6,7 @@
  */
 
 import type { ResolvedModel, ThinkingTier, GoogleSearchConfig } from "./types";
+import { XHIGH_TIER_BUDGET } from "../config/models";
 
 export interface ModelResolverOptions {
   cli_first?: boolean;
@@ -26,6 +27,8 @@ export const THINKING_TIER_BUDGETS = {
  * Gemini 3 uses thinkingLevel strings instead of numeric budgets.
  * Flash supports: minimal, low, medium, high
  * Pro supports: low, high (no minimal/medium)
+ * Gemini 4 adds xhigh, which is only offered by families that publish it; it is
+ * carried through providerOptions as a budget sentinel, so it is not listed here.
  */
 export const GEMINI_3_THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
 
@@ -83,9 +86,18 @@ export function registerAdvertisedModelIds(ids: Iterable<string>): void {
 /** Backend IDs whose catalog displayName marks them as "(Thinking)". */
 const catalogThinkingModelIds = new Set<string>();
 
-/** Preserve thinking-capable IDs discovered from Google's account-specific catalog. */
+/** Preserve thinking-capable IDs discovered from Google's account-specific catalog.
+ * Registers both the exact ID and the tier-stripped base ID so per-tier models
+ * like `claude-sonnet-5-5-high` match regardless of whether the caller passes
+ * the collapsed base or a specific tier ID. */
 export function registerCatalogThinkingModelIds(ids: Iterable<string>): void {
-  for (const id of ids) catalogThinkingModelIds.add(id.toLowerCase());
+  for (const id of ids) {
+    const lower = id.toLowerCase();
+    catalogThinkingModelIds.add(lower);
+    catalogThinkingModelIds.add(
+      lower.replace(QUOTA_PREFIX_REGEX, "").replace(TIER_REGEX, ""),
+    );
+  }
 }
 
 /** True when Google's catalog lists this model as "(Thinking)". Some thinking
@@ -98,15 +110,26 @@ export function isCatalogThinkingModel(model: string): boolean {
   return catalogThinkingModelIds.has(
     model
       .replace(QUOTA_PREFIX_REGEX, "")
-      .replace(/-(minimal|low|medium|high)$/i, "")
+      .replace(/-(minimal|low|medium|high|xhigh)$/i, "")
       .toLowerCase(),
   );
 }
 
-const TIER_REGEX = /-(minimal|low|medium|high)$/;
+const TIER_REGEX = /-(minimal|low|medium|high|xhigh)$/;
 const QUOTA_PREFIX_REGEX = /^antigravity-/i;
 const GEMINI_3_PRO_REGEX = /^gemini-3(?:\.\d+)?-pro/i;
 const GEMINI_3_FLASH_REGEX = /^gemini-3(?:\.\d+)?-flash/i;
+/**
+ * Gemini families whose thinking mode is a level string instead of a token
+ * budget. Gemini 3 introduced thinkingLevel; Gemini 4 (Argon, Hydrogen) keeps
+ * it and adds the xhigh tier. Gemini 2.5 stays budget-based.
+ */
+const GEMINI_LEVEL_REGEX = /^gemini-(?:3|4)(?:[.\-]|$)/i;
+
+/** True when the model's thinking mode is a level string ("low".."xhigh"). */
+export function isGeminiThinkingLevelModel(model: string): boolean {
+  return GEMINI_LEVEL_REGEX.test(model.replace(QUOTA_PREFIX_REGEX, ""));
+}
 
 // ANTIGRAVITY_ONLY_MODELS removed - all models now default to antigravity
 
@@ -126,7 +149,7 @@ const IMAGE_GENERATION_MODELS = /image|imagen/i;
 function supportsThinkingTiers(model: string): boolean {
   const lower = model.toLowerCase();
   return (
-    lower.includes("gemini-3") ||
+    isGeminiThinkingLevelModel(model) ||
     lower.includes("gemini-2.5") ||
     (lower.includes("claude") && lower.includes("thinking"))
   );
@@ -168,7 +191,7 @@ function isThinkingCapableModel(model: string): boolean {
   const lower = model.toLowerCase();
   return (
     lower.includes("thinking") ||
-    lower.includes("gemini-3") ||
+    isGeminiThinkingLevelModel(model) ||
     lower.includes("gemini-2.5")
   );
 }
@@ -195,15 +218,20 @@ export function isAdvertisedTierSuffixModel(model: string): boolean {
  * publishes. The plugin publishes one model for such a family, so the selected
  * variant has to select the backend ID.
  *
- * gemini-3.8-flash is seeded because it is a known family before discovery runs;
- * discovered families register themselves so new ones work without a release.
+ * gemini-3.8-flash and gemini-4-hydrogen are seeded because they are known
+ * families before discovery runs; discovered families register themselves so
+ * new ones work without a release.
  */
 const tierSuffixModelFamilies = new Map<string, ReadonlySet<string>>([
   ["gemini-3.8-flash", new Set<ThinkingTier>(["low", "medium", "high"])],
+  ["gemini-4-argon", new Set<ThinkingTier>(["low", "medium", "high"])],
+  ["gemini-4-hydrogen", new Set<ThinkingTier>(["low", "medium", "high", "xhigh"])],
+  ["claude-sonnet-5-5", new Set<ThinkingTier>(["low", "medium", "high"])],
+  ["claude-opus-5-5", new Set<ThinkingTier>(["low", "medium", "high"])],
 ]);
 
 /** Tiers tried in order when the requested level is not published for a family. */
-const TIER_FALLBACK_ORDER: readonly ThinkingTier[] = ["low", "medium", "high"];
+const TIER_FALLBACK_ORDER: readonly ThinkingTier[] = ["low", "medium", "high", "xhigh"];
 
 export function registerTierSuffixModelBases(families: Iterable<readonly [string, Iterable<string>]>): void {
   for (const [family, tiers] of families) {
@@ -228,8 +256,32 @@ export function applyTierModelSuffix(model: string, level: string | undefined): 
   if (!published) return model;
   const requested = (level ?? "").toLowerCase();
   if (published.has(requested)) return `${stripped}-${requested}`;
+  const existingTier = model.match(TIER_REGEX)?.[1]?.toLowerCase();
+  if (!requested && existingTier && published.has(existingTier)) return model;
   const fallback = TIER_FALLBACK_ORDER.find((tier) => published.has(tier));
   return fallback ? `${stripped}-${fallback}` : model;
+}
+
+/**
+ * Returns the thinking level to actually send for a per-tier-only family.
+ *
+ * `applyTierModelSuffix` picks the backend ID, but the thinking config is sent
+ * separately, so a level the family does not publish (for example the xhigh
+ * sentinel budget on a family that stops at high) would reach a backend ID that
+ * cannot honour it. This keeps the requested level when the family publishes it
+ * or the family is unknown, and otherwise returns the same fallback tier the
+ * model-ID rewrite picks.
+ */
+export function publishedTierFor(model: string, level: string | undefined): ThinkingTier | undefined {
+  const stripped = model.replace(TIER_REGEX, "");
+  const published = tierSuffixModelFamilies.get(stripped.replace(QUOTA_PREFIX_REGEX, "").toLowerCase());
+  // Only a family the catalog publishes xhigh for may receive it; every such
+  // family collapses into the registry above, so an unknown family that is
+  // handed the sentinel level falls back to high instead of guessing.
+  if (!published) return (level === "xhigh" ? "high" : level) as ThinkingTier | undefined;
+  const requested = (level ?? "").toLowerCase();
+  if (published.has(requested)) return requested as ThinkingTier;
+  return TIER_FALLBACK_ORDER.find((tier) => published.has(tier));
 }
 
 /**
@@ -309,13 +361,14 @@ export function resolveModelWithTier(requestedModel: string, options: ModelResol
     };
   }
 
-  // Check if this is a Gemini 3 model (works for both aliased and skipAlias paths)
-  const isEffectiveGemini3 = resolvedModel.toLowerCase().includes("gemini-3");
+  // Check if this model uses a thinking level rather than a token budget
+  // (Gemini 3 and later; works for both aliased and skipAlias paths)
+  const isLevelThinkingModel = isGeminiThinkingLevelModel(resolvedModel);
   const isClaudeThinking = resolvedModel.toLowerCase().includes("claude") && resolvedModel.toLowerCase().includes("thinking");
 
   if (!tier) {
-    // Gemini 3 models without explicit tier get a default thinkingLevel
-    if (isEffectiveGemini3) {
+    // Level-based models without an explicit tier get the lowest thinkingLevel
+    if (isLevelThinkingModel) {
       return {
         actualModel: resolvedModel,
         thinkingLevel: "low",
@@ -338,8 +391,8 @@ export function resolveModelWithTier(requestedModel: string, options: ModelResol
     return { actualModel: resolvedModel, isThinkingModel: isThinking, quotaPreference, explicitQuota };
   }
 
-  // Gemini 3 models with tier always get thinkingLevel set
-  if (isEffectiveGemini3) {
+  // Level-based models with a tier always get thinkingLevel set
+  if (isLevelThinkingModel) {
     return {
       actualModel: resolvedModel,
       thinkingLevel: tier,
@@ -352,7 +405,8 @@ export function resolveModelWithTier(requestedModel: string, options: ModelResol
 
   const budgetFamily = getBudgetFamily(resolvedModel);
   const budgets = THINKING_TIER_BUDGETS[budgetFamily];
-  const thinkingBudget = budgets[tier];
+  // Claude tiers stop at high; xhigh has no budget of its own.
+  const thinkingBudget = budgets[tier as keyof typeof budgets] ?? budgets.high;
 
   return {
     actualModel: resolvedModel,
@@ -367,15 +421,15 @@ export function resolveModelWithTier(requestedModel: string, options: ModelResol
 /**
  * Gets the model family for routing decisions.
  */
-export function getModelFamily(model: string): "claude" | "gemini-flash" | "gemini-pro" {
+export function getModelFamily(model: string): "claude" | "gemini-flash" | "gemini-argon" {
   const lower = model.toLowerCase();
   if (lower.includes("claude")) {
     return "claude";
   }
-  if (lower.includes("flash")) {
-    return "gemini-flash";
+  if (lower.includes("argon") || lower.includes("orchestrator")) {
+    return "gemini-argon";
   }
-  return "gemini-pro";
+  return "gemini-flash";
 }
 
 /**
@@ -387,10 +441,13 @@ export interface VariantConfig {
 }
 
 /**
- * Maps a thinking budget to Gemini 3 thinking level.
- * ≤8192 → low, ≤16384 → medium, >16384 → high
+ * Converts a legacy numeric thinking budget to a Gemini level. The xhigh tier is
+ * carried as {@link XHIGH_TIER_BUDGET} because the providerOptions schema cannot
+ * name it, so any budget at or above that value means xhigh; otherwise
+ * ≤8192 → low, ≤16384 → medium, >16384 → high.
  */
-function budgetToGemini3Level(budget: number): "low" | "medium" | "high" {
+export function budgetToGemini3Level(budget: number): ThinkingTier {
+  if (budget >= XHIGH_TIER_BUDGET) return "xhigh";
   if (budget <= 8192) return "low";
   if (budget <= 16384) return "medium";
   return "high";
@@ -479,10 +536,12 @@ export function resolveModelWithVariant(
   }
 
   const budget = variantConfig.thinkingBudget;
-  const isGemini3 = base.actualModel.toLowerCase().includes("gemini-3");
+  const isLevelThinkingModel = isGeminiThinkingLevelModel(base.actualModel);
 
-  if (isGemini3) {
-    const level = budgetToGemini3Level(budget);
+  if (isLevelThinkingModel) {
+    // Keep the level on a tier the family publishes; xhigh only arrives through
+    // the sentinel budget and must not reach a family that stops at high.
+    const level = publishedTierFor(base.actualModel, budgetToGemini3Level(budget)) ?? "high";
     const isAntigravityGemini3Pro = base.quotaPreference === "antigravity" &&
       isGemini3ProModel(base.actualModel) &&
       !isAdvertisedTierSuffixModel(base.actualModel);

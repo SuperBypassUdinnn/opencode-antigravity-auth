@@ -23,6 +23,8 @@ export {
   resolveModelWithVariant,
   resolveModelForHeaderStyle,
   applyTierModelSuffix,
+  publishedTierFor,
+  budgetToGemini3Level,
   registerTierSuffixModelBases,
   registerCatalogThinkingModelIds,
   isCatalogThinkingModel,

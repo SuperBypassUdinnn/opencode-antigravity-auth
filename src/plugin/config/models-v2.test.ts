@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { OPENCODE_V2_MODEL_DEFINITIONS, buildAccountModelDefinitions, isPreDiscoveryGatedModel } from "./models-v2"
+import { XHIGH_TIER_BUDGET } from "./models"
 import { isCatalogThinkingModel, resolveModelForHeaderStyle } from "../transform/model-resolver"
 
 describe("OpenCode V2 models", () => {
@@ -59,6 +60,32 @@ describe("OpenCode V2 models", () => {
     })
     expect(catalog["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
   })
+
+  it("collapses the Gemini 4 Hydrogen tiers into one model without the tiered duplicates", () => {
+    const catalog = buildAccountModelDefinitions({
+      "gemini-4-hydrogen-disabled": { displayName: "Gemini 4 Hydrogen", disabled: true },
+      "gemini-4-hydrogen-low": { displayName: "Gemini 4 Hydrogen (Low)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-hydrogen-medium": { displayName: "Gemini 4 Hydrogen (Medium)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-hydrogen-high": { displayName: "Gemini 4 Hydrogen (High)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-hydrogen-xhigh": { displayName: "Gemini 4 Hydrogen (XHigh)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-hydrogen-tiered-high": { displayName: "Gemini 4 Hydrogen (High)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-hydrogen-tiered-xhigh": { displayName: "Gemini 4 Hydrogen (XHigh)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-hydrogen-sonar": { displayName: "Gemini 4 Hydrogen Sonar", selectable: false },
+      "gemini-flash-worker-agy": { displayName: "Gemini 4 Hydrogen (Orchestrator)", selectable: false },
+    })
+
+    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-4-hydrogen"])
+    expect(catalog["antigravity-gemini-4-hydrogen"]).toMatchObject({
+      name: "Gemini 4 Hydrogen (Antigravity)",
+      limit: { context: 1048576, output: 262144 },
+      variants: [
+        { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
+        { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
+        { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
+        { id: "xhigh", settings: { thinkingConfig: { includeThoughts: true, thinkingBudget: XHIGH_TIER_BUDGET } } },
+      ],
+    })
+  })
 })
 
 describe("pre-discovery model gate", () => {
@@ -85,8 +112,12 @@ describe("catalog thinking registration", () => {
     buildAccountModelDefinitions({
       "claude-sonnet-9-8": { displayName: "Claude Sonnet 9.8 (Thinking)" },
       "claude-plain-9-8": { displayName: "Claude Plain 9.8" },
+      "claude-sonnet-5-5-high": { displayName: "Claude Sonnet 5.5 (High)", supportsThinking: true },
     })
     expect(isCatalogThinkingModel("claude-sonnet-9-8")).toBe(true)
     expect(isCatalogThinkingModel("claude-plain-9-8")).toBe(false)
+    expect(isCatalogThinkingModel("claude-sonnet-5-5")).toBe(true)
+    expect(isCatalogThinkingModel("claude-sonnet-5-5-high")).toBe(true)
+    expect(isCatalogThinkingModel("claude-sonnet-5-5-low")).toBe(true)
   })
 })
