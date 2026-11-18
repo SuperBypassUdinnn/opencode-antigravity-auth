@@ -94,13 +94,19 @@ export async function registerAccountManagement(
               const weeklyData = quota.weeklyRemainingFraction !== undefined || quota.weeklyResetTime
                 ? { remainingFraction: quota.weeklyRemainingFraction, resetTime: quota.weeklyResetTime }
                 : groups["gemini-argon"]
-                  ? { remainingFraction: undefined, resetTime: groups["gemini-argon"].resetTime }
+                  ? { remainingFraction: undefined, resetTime: groups["gemini-argon"].weeklyResetTime ?? groups["gemini-argon"].resetTime }
                   : undefined
               const report = formatTwoTierQuotaReport(quota, weeklyData)
               lines.push(`  Antigravity ${group}: ${report}`)
             } else {
-              const percent = quota.remainingFraction === undefined ? "unknown" : `${Math.round(quota.remainingFraction * 100)}% remaining`
-              const resetPart = quota.resetTime ? `; resets ${formatResetStamp(quota.resetTime)}` : ""
+              const fraction = group === "gemini-argon"
+                ? (quota.weeklyRemainingFraction ?? quota.remainingFraction)
+                : quota.remainingFraction
+              const resetAt = group === "gemini-argon"
+                ? (quota.weeklyResetTime ?? quota.resetTime)
+                : quota.resetTime
+              const percent = fraction === undefined ? "unknown" : `${Math.round(fraction * 100)}% remaining`
+              const resetPart = resetAt ? `; resets ${formatResetStamp(resetAt)}` : ""
               lines.push(`  Antigravity ${group}: ${percent}${resetPart}`)
             }
           }

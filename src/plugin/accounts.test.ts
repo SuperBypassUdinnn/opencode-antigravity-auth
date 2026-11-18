@@ -2269,11 +2269,13 @@ describe("resolveQuotaGroup", () => {
     expect(resolveQuotaGroup("gemini", "gemini-2.5-pro")).toBe("gemini-flash");
     expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
     expect(resolveQuotaGroup("gemini", "gemini-4-hydrogen-high")).toBe("gemini-flash");
-    // Gemini 4 Argon and Orchestrator draw from their own weekly-only bucket.
+    // Gemini 4 Argon and Orchestrator planner draw from their own weekly-only bucket,
+    // while the Orchestrator flash worker shares the 5h gemini-flash pool.
     expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini-argon");
     expect(resolveQuotaGroup("gemini", "antigravity-gemini-4-argon")).toBe("gemini-argon");
     expect(resolveQuotaGroup("gemini", "gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
     expect(resolveQuotaGroup("gemini", "antigravity-gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
+    expect(resolveQuotaGroup("gemini", "gemini-flash-worker-agy")).toBe("gemini-flash");
     // Claude keeps its own branch even if the id mentions argon or orchestrator.
     expect(resolveQuotaGroup("claude", "claude-argon-x")).toBe("claude");
   });

@@ -127,6 +127,35 @@ describe("account management", () => {
     if (action === "disable") expect(state.storage!.accounts[0]!.enabled).toBe(false)
     else expect(state.storage!.accounts.some(item => item.id === account!.id)).toBe(false)
   })
+
+  it("renders gemini-argon with its weekly fraction and reset stamp", async () => {
+    const { handlers } = await host()
+    const [account] = await handlers.list({}, callContext)
+    const fiveHour = new Date(Date.now() + 2 * 3600_000).toISOString()
+    const weekly = new Date(Date.now() + 5 * 86400_000).toISOString()
+    vi.mocked(checkAccountsQuota).mockImplementationOnce(async () => [{
+      index: 0,
+      status: "ok",
+      quota: {
+        modelCount: 2,
+        groups: {
+          "gemini-flash": { remainingFraction: 0.9, resetTime: fiveHour, modelCount: 1 },
+          "gemini-argon": {
+            remainingFraction: 0.5,
+            resetTime: fiveHour,
+            weeklyRemainingFraction: 0.85,
+            weeklyResetTime: weekly,
+            modelCount: 1,
+          },
+        },
+      },
+    }])
+
+    const result = await handlers.quotas({ id: account!.id }, callContext)
+    const argonLine = result.report.split("\n").find(line => line.includes("Antigravity gemini-argon:"))
+    expect(argonLine).toContain("85% remaining")
+    expect(argonLine).toMatch(/in [45]d /)
+  })
 })
 
 describe("account management clearLimits", () => {

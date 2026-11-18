@@ -98,6 +98,51 @@ describe("checkAccountsQuota", () => {
     expect(new Headers(cliCall?.[1]?.headers).get("User-Agent")).toBe(GEMINI_CLI_HEADERS["User-Agent"])
   })
 
+  it("syncs gemini-argon resetTime and remainingFraction from its weekly summary bucket", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/v1internal:fetchAvailableModels")) {
+        return jsonResponse({
+          models: {
+            "gemini-4-argon-high": {
+              displayName: "Gemini 4 Argon (High)",
+              quotaInfo: { remainingFraction: 0.9, resetTime: "2030-01-08T00:00:00Z" },
+            },
+            "gemini-flash-worker-agy": {
+              displayName: "Gemini 4 Hydrogen (Orchestrator)",
+              selectable: false,
+              quotaInfo: { remainingFraction: 0.97, resetTime: "2030-01-01T05:00:00Z" },
+            },
+          },
+        })
+      }
+      if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
+        return jsonResponse({
+          groups: [
+            {
+              displayName: "Gemini 4 Argon",
+              buckets: [
+                { window: "weekly", remainingFraction: 0.88, resetTime: "2030-01-08T12:00:00Z" },
+              ],
+            },
+          ],
+        })
+      }
+      return jsonResponse({ buckets: [] })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const [result] = await checkAccountsQuota([account], {} as PluginClient)
+
+    expect(result?.quota?.groups["gemini-argon"]).toMatchObject({
+      remainingFraction: 0.88,
+      resetTime: "2030-01-08T12:00:00Z",
+      weeklyRemainingFraction: 0.88,
+      weeklyResetTime: "2030-01-08T12:00:00Z",
+    })
+    expect(result?.quota?.groups["gemini-flash"]?.resetTime).toBe("2030-01-01T05:00:00Z")
+  })
+
   it("shows current Gemini CLI model versions returned by Google", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith(":fetchAvailableModels")) return jsonResponse({ models: {} })
@@ -209,5 +254,28 @@ describe("aggregateQuota per-model entries", () => {
     expect(summary.groups["gemini-flash"]?.remainingFraction).toBe(0.9);
     expect(summary.groups["gemini-flash"]?.models?.["gemini-4-argon-high"]).toBeUndefined();
     expect(summary.groups["gemini-flash"]?.models?.["gemini-pro-orchestrator-g1-pro"]).toBeUndefined();
+  });
+
+  it("keeps the 5h orchestrator worker in gemini-flash so gemini-argon retains its weekly reset", () => {
+    const models = {
+      "gemini-4-argon-high": {
+        displayName: "Gemini 4 Argon (High)",
+        quotaInfo: { remainingFraction: 0.9, resetTime: "2030-01-08T00:00:00Z" },
+      },
+      "gemini-flash-worker-agy": {
+        displayName: "Gemini 4 Hydrogen (Orchestrator)",
+        selectable: false,
+        quotaInfo: { remainingFraction: 0.97, resetTime: "2030-01-01T05:00:00Z" },
+      },
+    } as Parameters<typeof aggregateQuota>[0];
+
+    const summary = aggregateQuota(models);
+
+    const argon = summary.groups["gemini-argon"];
+    expect(argon?.resetTime).toBe("2030-01-08T00:00:00Z");
+    expect(argon?.models?.["gemini-flash-worker-agy"]).toBeUndefined();
+    const flash = summary.groups["gemini-flash"];
+    expect(flash?.resetTime).toBe("2030-01-01T05:00:00Z");
+    expect(flash?.models?.["gemini-flash-worker-agy"]?.remainingFraction).toBe(0.97);
   });
 });

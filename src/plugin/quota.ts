@@ -169,6 +169,11 @@ function parseResetTime(resetTime?: string): number | null {
  */
 export function isArgonModelName(value: string): boolean {
   const lower = value.toLowerCase();
+  // The Orchestrator worker (`gemini-flash-worker-agy`) shares the 5h
+  // gemini-flash bucket even though Google labels it "(Orchestrator)".
+  if (lower.includes("worker") || lower.includes("flash")) {
+    return false;
+  }
   return lower.includes("argon") || lower.includes("orchestrator");
 }
 
@@ -550,10 +555,17 @@ export async function checkAccountsQuota(
                     }
                   } else if (bucket.window === "weekly" || (bucket.displayName ?? "").toLowerCase().includes("weekly")) {
                     if (bucket.remainingFraction !== undefined) {
-                      targetGroup.weeklyRemainingFraction = normalizeRemainingFraction(bucket.remainingFraction);
+                      const normalized = normalizeRemainingFraction(bucket.remainingFraction);
+                      targetGroup.weeklyRemainingFraction = normalized;
+                      if (targetKey === "gemini-argon") {
+                        targetGroup.remainingFraction = normalized;
+                      }
                     }
                     if (bucket.resetTime) {
                       targetGroup.weeklyResetTime = bucket.resetTime;
+                      if (targetKey === "gemini-argon") {
+                        targetGroup.resetTime = bucket.resetTime;
+                      }
                     }
                   }
                 }

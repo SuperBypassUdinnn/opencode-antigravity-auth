@@ -503,6 +503,7 @@ describe("getModelFamily", () => {
     expect(getModelFamily("gemini-3.8-flash")).toBe("gemini-flash");
     expect(getModelFamily("gemini-4-hydrogen")).toBe("gemini-flash");
     expect(getModelFamily("gemini-4-hydrogen-high")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-flash-worker-agy")).toBe("gemini-flash");
     expect(getModelFamily("gemini-2.5-pro")).toBe("gemini-flash");
     expect(getModelFamily("gemini-3-flash")).toBe("gemini-flash");
   });
