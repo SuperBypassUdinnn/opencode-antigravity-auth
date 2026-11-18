@@ -83,11 +83,14 @@ const CATALOG_TIER_SUFFIX = /^(.*)-(minimal|low|medium|high|xhigh)$/
 const TIER_LABEL = /\s*\((?:minimal|low|medium|high|xhigh)\)\s*$/i
 
 /** Excludes completion/internal, image-generation, tier routers (bare "-tiered"
- * and its per-tier "-tiered-<tier>" duplicates), deprecated models, and disabled entries. */
+ * and its per-tier "-tiered-<tier>" duplicates), Orchestrator planner/worker
+ * models, deprecated models, and disabled entries. */
 function isChatModel(id: string, model: AvailableModel): boolean {
   return /^(gemini-|claude-|gpt-oss-)/.test(id)
     && !/image|imagen|-(disabled|tiered)(?:-(?:minimal|low|medium|high|xhigh))?$/.test(id)
     && id !== "gemini-3.5-flash-lite"
+    && !/orchestrator/i.test(id)
+    && !/orchestrator/i.test(model.displayName ?? "")
     && !model.disabled
     && model.selectable !== false
 }

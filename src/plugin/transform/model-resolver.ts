@@ -426,7 +426,7 @@ export function getModelFamily(model: string): "claude" | "gemini-flash" | "gemi
   if (lower.includes("claude")) {
     return "claude";
   }
-  if (lower.includes("argon") || lower.includes("orchestrator")) {
+  if (!lower.includes("worker") && !lower.includes("flash") && (lower.includes("argon") || lower.includes("orchestrator"))) {
     return "gemini-argon";
   }
   return "gemini-flash";
