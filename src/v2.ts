@@ -771,7 +771,7 @@ export const AntigravityV2Plugin = Plugin.define({
       if (hasSavedAccounts && ctx.options.discoverModels !== false && (!validCache || Date.now() - (cached?.updatedAt ?? 0) > 3600_000)) {
         // Setup must not wait for a sweep over every saved account: each account
         // refresh triggers a provider reload that runs setup again.
-        void refreshModels().catch(error => log.warn("Model discovery unavailable; using cached or fallback models", { error: String(error) }))
+        void refreshModels({ force: !validCache }).catch(error => log.warn("Model discovery unavailable; using cached or fallback models", { error: String(error) }))
       }
       return cleanup
     } catch (error) {

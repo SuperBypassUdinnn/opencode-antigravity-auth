@@ -35,10 +35,10 @@ describe("ANTIGRAVITY_VERSION_FALLBACK", () => {
     expect(isSupportedAntigravityVersion(getAntigravityVersion())).toBe(true)
   })
 
-  it("is 2.24.0 with its verified build changelist", async () => {
+  it("is 2.33.0 with its verified build changelist", async () => {
     const { ANTIGRAVITY_VERSION_FALLBACK, ANTIGRAVITY_HUB_CHANGELISTS } = await import("../constants.ts")
-    expect(ANTIGRAVITY_VERSION_FALLBACK).toBe("2.24.0")
-    expect(ANTIGRAVITY_HUB_CHANGELISTS[ANTIGRAVITY_VERSION_FALLBACK]).toBe("1000335682")
+    expect(ANTIGRAVITY_VERSION_FALLBACK).toBe("2.33.0")
+    expect(ANTIGRAVITY_HUB_CHANGELISTS[ANTIGRAVITY_VERSION_FALLBACK]).toBe("4731201358004224")
   })
 })
 
@@ -137,7 +137,7 @@ describe("initAntigravityVersion — network failure path", () => {
 
     const headers = getAntigravityHeaders()
     expect(headers["User-Agent"]).toBe(
-      `antigravity/hub/${ANTIGRAVITY_VERSION_FALLBACK} (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)`,
+      `antigravity/hub/${ANTIGRAVITY_VERSION_FALLBACK} (aidev_client; os_type=darwin; arch=arm64; cl=4731201358004224)`,
     )
   })
 

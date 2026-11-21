@@ -76,14 +76,16 @@ plugin applies to other Gemini 3 models. Collapsing happens only when the catalo
 publishes two or more tiers of the same base and no bare base ID, so a family
 that Google publishes directly is never rewritten.
 
-Gemini 4 Hydrogen follows the same rule with one extra tier: the catalog lists
-`gemini-4-hydrogen-low`, `-medium`, `-high`, and `-xhigh`, plus duplicate
-`-tiered-high` / `-tiered-xhigh` router entries that carry the same names. The
-duplicates are filtered out, so the plugin publishes exactly one model with four
-variants:
+Gemini 4 Hydrogen and Gemini 4 Neon follow the same rule with one extra tier:
+the catalog lists `gemini-4-hydrogen-low`, `-medium`, `-high`, and `-xhigh` (and
+the equivalent `gemini-4-neon-*` set), plus duplicate `-tiered-high` /
+`-tiered-xhigh` router entries that carry the same names. The duplicates are
+filtered out, so the plugin publishes exactly one model with four variants for
+each family:
 
 ```bash
 opencode run "Hello" --model=google/antigravity-gemini-4-hydrogen#xhigh
+opencode run "Hello" --model=google/antigravity-gemini-4-neon#xhigh
 ```
 
 Tiers in this table are the ones the backend actually answers; `xhigh` is

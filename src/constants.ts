@@ -70,7 +70,7 @@ export const ANTIGRAVITY_MINIMUM_VERSION = "2.23.0";
  * Hub release reported when the update manifest is unreachable. Keep it at or above
  * ANTIGRAVITY_MINIMUM_VERSION and update it together with ANTIGRAVITY_HUB_CHANGELISTS.
  */
-export const ANTIGRAVITY_VERSION_FALLBACK = "2.24.0";
+export const ANTIGRAVITY_VERSION_FALLBACK = "2.33.0";
 
 /**
  * Build changelists of specific Hub releases. Releases without a known CL omit the
@@ -81,6 +81,7 @@ export const ANTIGRAVITY_HUB_CHANGELISTS: Readonly<Record<string, string>> = {
   "2.23.1": "998881661",
   "2.24.0": "1000335682",
   "2.32.1": "6001966350991360",
+  "2.33.0": "4731201358004224",
 };
 
 /** Platform of the arm64 macOS update manifest the runtime version is read from. */

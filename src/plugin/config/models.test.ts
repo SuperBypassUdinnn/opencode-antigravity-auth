@@ -16,6 +16,7 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
 
     expect(modelNames).toEqual([
       "antigravity-claude-opus-4-6-thinking",
+      "antigravity-claude-opus-5-5",
       "antigravity-claude-opus-5-5-thinking",
       "antigravity-claude-sonnet-4-6",
       "antigravity-claude-sonnet-5-5",
@@ -25,6 +26,7 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       "antigravity-gemini-3.8-flash",
       "antigravity-gemini-4-argon",
       "antigravity-gemini-4-hydrogen",
+      "antigravity-gemini-4-neon",
       "gemini-2.5-flash",
       "gemini-2.5-pro",
       "gemini-3-flash-preview",
@@ -62,10 +64,33 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
     });
   });
 
+  it("defines the full Gemini 4 Neon tier set, including xhigh", () => {
+    expect(getModel("antigravity-gemini-4-neon").variants).toEqual({
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+      xhigh: { thinkingLevel: "xhigh" },
+    });
+  });
+
   it("defines thinking budget variants for Claude thinking models", () => {
     expect(getModel("antigravity-claude-opus-4-6-thinking").variants).toEqual({
       low: { thinkingConfig: { thinkingBudget: 8192 } },
       max: { thinkingConfig: { thinkingBudget: 32768 } },
+    });
+  });
+
+  it("defines thinking level variants for Claude 5.5 models", () => {
+    expect(getModel("antigravity-claude-sonnet-5-5").variants).toEqual({
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+    });
+
+    expect(getModel("antigravity-claude-opus-5-5").variants).toEqual({
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
     });
   });
 });

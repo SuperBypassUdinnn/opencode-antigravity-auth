@@ -88,11 +88,34 @@ describe("OpenCode V2 models", () => {
       ],
     })
   })
+
+  it("collapses the Gemini 4 Neon tiers into one model with four variants", () => {
+    const catalog = buildAccountModelDefinitions({
+      "gemini-4-neon-low": { displayName: "Gemini 4 Neon (Low)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-neon-medium": { displayName: "Gemini 4 Neon (Medium)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-neon-high": { displayName: "Gemini 4 Neon (High)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-neon-xhigh": { displayName: "Gemini 4 Neon (XHigh)", maxTokens: 1048576, maxOutputTokens: 262144 },
+    })
+
+    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-4-neon"])
+    expect(catalog["antigravity-gemini-4-neon"]).toMatchObject({
+      name: "Gemini 4 Neon (Antigravity)",
+      limit: { context: 1048576, output: 262144 },
+      variants: [
+        { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
+        { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
+        { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
+        { id: "xhigh", settings: { thinkingConfig: { includeThoughts: true, thinkingBudget: XHIGH_TIER_BUDGET } } },
+      ],
+    })
+  })
 })
 
 describe("pre-discovery model gate", () => {
   it("includes the three new pro models in the fallback definitions", () => {
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-argon"]).toBeDefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"]).toBeDefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-neon"]).toBeDefined()
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-claude-sonnet-5-5"]).toBeDefined()
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-claude-opus-5-5-thinking"]).toBeDefined()
   })
@@ -100,6 +123,8 @@ describe("pre-discovery model gate", () => {
   it("flags gated bases regardless of prefix case and tier suffix", () => {
     expect(isPreDiscoveryGatedModel("antigravity-gemini-4-argon-high")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-gemini-4-argon")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-neon-high")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-neon")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-claude-sonnet-5-5")).toBe(true)
     expect(isPreDiscoveryGatedModel("ANTIGRAVITY-CLAUDE-OPUS-5-5-THINKING-HIGH")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-claude-opus-5-5-high")).toBe(true)

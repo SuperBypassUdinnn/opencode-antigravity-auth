@@ -16,7 +16,7 @@ export const ModelCatalogCacheSchema = z.object({
 // Used before login or when discovery is unavailable. Once connected, Google's
 // catalog replaces this list, including model IDs, names and token limits.
 const fallbackModels: Record<string, OpencodeModelDefinition> = Object.fromEntries(
-  ["antigravity-gemini-3-flash", "antigravity-gemini-3.8-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking", "antigravity-gemini-4-argon", "antigravity-gemini-4-hydrogen", "antigravity-claude-sonnet-5-5", "antigravity-claude-opus-5-5-thinking"]
+  ["antigravity-gemini-3-flash", "antigravity-gemini-3.8-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking", "antigravity-gemini-4-argon", "antigravity-gemini-4-hydrogen", "antigravity-gemini-4-neon", "antigravity-claude-sonnet-5-5", "antigravity-claude-opus-5-5", "antigravity-claude-opus-5-5-thinking"]
     .flatMap(id => OPENCODE_MODEL_DEFINITIONS[id] ? [[id, OPENCODE_MODEL_DEFINITIONS[id]]] : []),
 )
 
