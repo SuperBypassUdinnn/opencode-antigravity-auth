@@ -130,11 +130,42 @@ export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = {
       xhigh: { thinkingLevel: "xhigh" },
     },
   },
+  // The catalog advertises Gemini 4 Neon as four per-tier IDs
+  // (gemini-4-neon-low/medium/high/xhigh). The plugin publishes one
+  // model and rewrites the backend ID from the selected variant.
+  "antigravity-gemini-4-neon": {
+    name: "Gemini 4 Neon (Antigravity)",
+    limit: { context: 1048576, output: 262144 },
+    modalities: DEFAULT_MODALITIES,
+    proTier: true,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+      xhigh: { thinkingLevel: "xhigh" },
+    },
+  },
   "antigravity-claude-sonnet-5-5": {
     name: "Claude Sonnet 5.5 (Antigravity)",
     limit: { context: 200000, output: 64000 },
     modalities: DEFAULT_MODALITIES,
     proTier: true,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+    },
+  },
+  "antigravity-claude-opus-5-5": {
+    name: "Claude Opus 5.5 (Antigravity)",
+    limit: { context: 200000, output: 64000 },
+    modalities: DEFAULT_MODALITIES,
+    proTier: true,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+    },
   },
   "antigravity-claude-opus-5-5-thinking": {
     name: "Claude Opus 5.5 Thinking (Antigravity)",

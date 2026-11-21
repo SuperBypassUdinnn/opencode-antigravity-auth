@@ -226,6 +226,7 @@ const tierSuffixModelFamilies = new Map<string, ReadonlySet<string>>([
   ["gemini-3.8-flash", new Set<ThinkingTier>(["low", "medium", "high"])],
   ["gemini-4-argon", new Set<ThinkingTier>(["low", "medium", "high"])],
   ["gemini-4-hydrogen", new Set<ThinkingTier>(["low", "medium", "high", "xhigh"])],
+  ["gemini-4-neon", new Set<ThinkingTier>(["low", "medium", "high", "xhigh"])],
   ["claude-sonnet-5-5", new Set<ThinkingTier>(["low", "medium", "high"])],
   ["claude-opus-5-5", new Set<ThinkingTier>(["low", "medium", "high"])],
 ]);

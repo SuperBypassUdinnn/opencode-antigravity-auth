@@ -257,6 +257,12 @@ describe("resolveModelWithVariant", () => {
       expect(hydrogen.actualModel).toBe("gemini-4-hydrogen");
       expect(hydrogen.thinkingLevel).toBe("xhigh");
 
+      const neon = resolveModelWithVariant("antigravity-gemini-4-neon", {
+        thinkingBudget: XHIGH_TIER_BUDGET,
+      });
+      expect(neon.actualModel).toBe("gemini-4-neon");
+      expect(neon.thinkingLevel).toBe("xhigh");
+
       const flash = resolveModelWithVariant("antigravity-gemini-3.8-flash", {
         thinkingBudget: XHIGH_TIER_BUDGET,
       });
@@ -437,6 +443,15 @@ describe("tiered catalog families", () => {
     expect(applyTierModelSuffix("gemini-4-hydrogen-high", "xhigh")).toBe("gemini-4-hydrogen-xhigh");
   });
 
+  it("rewrites the Gemini 4 Neon tiers, including xhigh", () => {
+    expect(applyTierModelSuffix("gemini-4-neon", "low")).toBe("gemini-4-neon-low");
+    expect(applyTierModelSuffix("gemini-4-neon", "medium")).toBe("gemini-4-neon-medium");
+    expect(applyTierModelSuffix("gemini-4-neon", "high")).toBe("gemini-4-neon-high");
+    expect(applyTierModelSuffix("gemini-4-neon", "xhigh")).toBe("gemini-4-neon-xhigh");
+    expect(applyTierModelSuffix("antigravity-gemini-4-neon", "xhigh")).toBe("antigravity-gemini-4-neon-xhigh");
+    expect(applyTierModelSuffix("gemini-4-neon-high", "xhigh")).toBe("gemini-4-neon-xhigh");
+  });
+
   it("registers additional families discovered from the catalog", () => {
     registerTierSuffixModelBases([
       ["gemini-9-flash", ["minimal", "low", "high"]],
@@ -452,6 +467,8 @@ describe("published tier guard", () => {
   it("keeps a published level and falls back for one the family omits", () => {
     expect(publishedTierFor("gemini-4-hydrogen", "xhigh")).toBe("xhigh");
     expect(publishedTierFor("antigravity-gemini-4-hydrogen", "medium")).toBe("medium");
+    expect(publishedTierFor("gemini-4-neon", "xhigh")).toBe("xhigh");
+    expect(publishedTierFor("antigravity-gemini-4-neon", "low")).toBe("low");
     // 3.8 Flash stops at high, so the xhigh sentinel must not reach the backend.
     expect(publishedTierFor("gemini-3.8-flash", "xhigh")).toBe("low");
     expect(publishedTierFor("gemini-3.8-flash", "minimal")).toBe("low");
@@ -503,6 +520,8 @@ describe("getModelFamily", () => {
     expect(getModelFamily("gemini-3.8-flash")).toBe("gemini-flash");
     expect(getModelFamily("gemini-4-hydrogen")).toBe("gemini-flash");
     expect(getModelFamily("gemini-4-hydrogen-high")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-4-neon")).toBe("gemini-flash");
+    expect(getModelFamily("gemini-4-neon-high")).toBe("gemini-flash");
     expect(getModelFamily("gemini-flash-worker-agy")).toBe("gemini-flash");
     expect(getModelFamily("gemini-2.5-pro")).toBe("gemini-flash");
     expect(getModelFamily("gemini-3-flash")).toBe("gemini-flash");
