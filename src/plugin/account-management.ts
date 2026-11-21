@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import { AntigravityAccountsRpc, type AccountSummary } from "./account-rpc.ts"
 import { parseRefreshParts } from "./auth.ts"
-import { checkAccountsQuota, isProQuotaGroup } from "./quota.ts"
+import { checkAccountsQuota, isProQuotaGroup, type QuotaGroup } from "./quota.ts"
 import { accountTokenHash, loadAccounts, matchesAccountToken, saveAccountCredentials, updateAccountCredentials, updateAccounts, type AccountMetadataV3 } from "./storage.ts"
 import { formatResetStamp, formatTwoTierQuotaReport } from "./reset-time.ts"
 import { getHealthTracker } from "./rotation.ts"
@@ -89,7 +89,18 @@ export async function registerAccountManagement(
           const groups = result.quota?.groups ?? {}
           const isProAccount = isProQuotaGroup(groups)
 
-          for (const [group, quota] of Object.entries(groups)) {
+          // Stable order for bucket groups so UI output never shuffles
+          const groupOrder: QuotaGroup[] = ["claude", "gemini-flash", "gemini-argon"]
+          const orderedGroups = groupOrder
+            .filter(g => groups[g] !== undefined)
+            .map(g => [g, groups[g]!] as const)
+          for (const extraKey of Object.keys(groups)) {
+            if (!groupOrder.includes(extraKey as QuotaGroup)) {
+              orderedGroups.push([extraKey as QuotaGroup, groups[extraKey as QuotaGroup]!])
+            }
+          }
+
+          for (const [group, quota] of orderedGroups) {
             if (isProAccount && (group === "claude" || group === "gemini-flash")) {
               const weeklyData = quota.weeklyRemainingFraction !== undefined || quota.weeklyResetTime
                 ? { remainingFraction: quota.weeklyRemainingFraction, resetTime: quota.weeklyResetTime }
@@ -111,7 +122,8 @@ export async function registerAccountManagement(
             }
           }
           if (result.quota?.error) lines.push(`  Antigravity: ${result.quota.error}`)
-          for (const quota of result.geminiCliQuota?.models ?? []) {
+          const models = [...(result.geminiCliQuota?.models ?? [])].sort((a, b) => a.modelId.localeCompare(b.modelId))
+          for (const quota of models) {
             lines.push(`  Gemini CLI ${quota.modelId}: ${Math.round(quota.remainingFraction * 100)}% remaining${quota.resetTime ? `; resets ${formatResetStamp(quota.resetTime)}` : ""}`)
           }
           if (result.geminiCliQuota?.error) lines.push(`  Gemini CLI: ${result.geminiCliQuota.error}`)

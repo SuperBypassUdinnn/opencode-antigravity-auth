@@ -156,6 +156,31 @@ describe("account management", () => {
     expect(argonLine).toContain("85% remaining")
     expect(argonLine).toMatch(/in [45]d /)
   })
+
+  it("renders bucket groups in a fixed, stable order", async () => {
+    const { handlers } = await host()
+    const [account] = await handlers.list({}, callContext)
+    const reset = new Date(Date.now() + 3600_000).toISOString()
+    vi.mocked(checkAccountsQuota).mockImplementationOnce(async () => [{
+      index: 0,
+      status: "ok",
+      quota: {
+        modelCount: 3,
+        groups: {
+          "gemini-argon": { remainingFraction: 0.7, resetTime: reset, modelCount: 1 },
+          "gemini-flash": { remainingFraction: 0.8, resetTime: reset, modelCount: 1 },
+          claude: { remainingFraction: 0.9, resetTime: reset, modelCount: 1 },
+        },
+      },
+    }])
+
+    const result = await handlers.quotas({ id: account!.id }, callContext)
+    const lines = result.report.split("\n").filter(line => line.includes("Antigravity "))
+    expect(lines).toHaveLength(3)
+    expect(lines[0]).toContain("Antigravity claude:")
+    expect(lines[1]).toContain("Antigravity gemini-flash:")
+    expect(lines[2]).toContain("Antigravity gemini-argon:")
+  })
 })
 
 describe("account management clearLimits", () => {
