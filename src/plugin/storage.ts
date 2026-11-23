@@ -28,6 +28,7 @@ export const GITIGNORE_ENTRIES = [
   "antigravity-accounts.json.bak",
   "antigravity-accounts.json.*.tmp",
   "antigravity-signature-cache.json",
+  "antigravity-version-cache.json",
   "antigravity-logs/",
 ];
 

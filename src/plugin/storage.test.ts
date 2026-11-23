@@ -782,6 +782,7 @@ describe("Storage Migration", () => {
         "antigravity-accounts.json.bak",
         "antigravity-accounts.json.*.tmp",
         "antigravity-signature-cache.json",
+        "antigravity-version-cache.json",
         "antigravity-logs/",
       ].join("\n");
       vi.mocked(fs.readFile).mockResolvedValue(existing);
@@ -847,6 +848,7 @@ describe("Storage Migration", () => {
         "antigravity-accounts.json.bak",
         "antigravity-accounts.json.*.tmp",
         "antigravity-signature-cache.json",
+        "antigravity-version-cache.json",
         "antigravity-logs/",
       ].join("\n");
       vi.mocked(readFileSync).mockReturnValue(existing);

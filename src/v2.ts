@@ -19,6 +19,7 @@ import { startOAuthListener, type OAuthListener } from "./plugin/server.ts"
 import { loadAccounts, matchesAccountToken, saveAccountCredentials, updateAccountCredentials, updateAccounts, type AccountMetadataV3 } from "./plugin/storage.ts"
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token.ts"
 import { resolveModelWithTier } from "./plugin/transform/model-resolver.ts"
+import { refreshAntigravityVersion } from "./plugin/version.ts"
 import type { AuthDetails, LoaderResult, OAuthAuthDetails, PluginClient } from "./plugin/types.ts"
 
 const PROVIDER_ID = "google"
@@ -773,6 +774,7 @@ export const AntigravityV2Plugin = Plugin.define({
         // refresh triggers a provider reload that runs setup again.
         void refreshModels({ force: !validCache }).catch(error => log.warn("Model discovery unavailable; using cached or fallback models", { error: String(error) }))
       }
+      void refreshAntigravityVersion().catch(error => log.warn("Version refresh unavailable; using fallback version", { error: String(error) }))
       return cleanup
     } catch (error) {
       await cleanup()

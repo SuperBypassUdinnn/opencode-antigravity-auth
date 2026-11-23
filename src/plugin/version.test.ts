@@ -16,10 +16,24 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 // Reset module state between tests so versionLocked starts fresh
 beforeEach(() => {
   vi.resetModules()
+  const { existsSync, unlinkSync } = require("node:fs")
+  const { join } = require("node:path")
+  const { homedir } = require("node:os")
+  const cachePath = join(homedir(), ".config/opencode/antigravity-version-cache.json")
+  if (existsSync(cachePath)) {
+    try { unlinkSync(cachePath) } catch {}
+  }
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  const { existsSync, unlinkSync } = require("node:fs")
+  const { join } = require("node:path")
+  const { homedir } = require("node:os")
+  const cachePath = join(homedir(), ".config/opencode/antigravity-version-cache.json")
+  if (existsSync(cachePath)) {
+    try { unlinkSync(cachePath) } catch {}
+  }
 })
 
 describe("ANTIGRAVITY_VERSION_FALLBACK", () => {
@@ -241,5 +255,22 @@ describe("long-lived Hub version checks", () => {
       vi.unstubAllGlobals()
       vi.useRealTimers()
     }
+  })
+
+  it("persists discovered version and changelist to disk cache", async () => {
+    const REAL_MANIFEST = [
+      "version: 2.34.0",
+      "files:",
+      "  - url: https://storage.googleapis.com/antigravity-public/antigravity-hub/2.34.0-5887025308631040/darwin-arm/Antigravity.zip",
+    ].join("\n")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(REAL_MANIFEST)))
+    const { initAntigravityVersion, loadCachedVersion } = await import("./version.ts")
+    await initAntigravityVersion()
+
+    const cached = loadCachedVersion()
+    expect(cached).toMatchObject({
+      version: "2.34.0",
+      changelist: "5887025308631040",
+    })
   })
 })
