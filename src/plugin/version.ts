@@ -21,9 +21,57 @@ import {
   setAntigravityVersion,
 } from "../constants";
 import { createLogger } from "./logger";
+import { getConfigDir } from "./storage";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const ANTIGRAVITY_HUB_MANIFEST_URL =
   "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
+
+export interface VersionCacheEntry {
+  version: string;
+  changelist?: string;
+  updatedAt: number;
+}
+
+const VERSION_CACHE_FILENAME = "antigravity-version-cache.json";
+
+function getVersionCachePath(): string {
+  return join(getConfigDir(), VERSION_CACHE_FILENAME);
+}
+
+export function loadCachedVersion(): VersionCacheEntry | null {
+  try {
+    const cachePath = getVersionCachePath();
+    if (!existsSync(cachePath)) return null;
+    const raw = readFileSync(cachePath, "utf-8");
+    const data = JSON.parse(raw) as Partial<VersionCacheEntry>;
+    if (typeof data.version === "string" && isSupportedAntigravityVersion(data.version) && typeof data.updatedAt === "number") {
+      return {
+        version: data.version,
+        changelist: typeof data.changelist === "string" ? data.changelist : undefined,
+        updatedAt: data.updatedAt,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedVersion(version: string, changelist?: string): void {
+  try {
+    const cachePath = getVersionCachePath();
+    const payload: VersionCacheEntry = {
+      version,
+      changelist: changelist || undefined,
+      updatedAt: Date.now(),
+    };
+    writeFileSync(cachePath, JSON.stringify(payload, null, 2), "utf-8");
+  } catch {
+    // Non-critical file write
+  }
+}
 
 const MANIFEST_HEADERS = {
   "User-Agent": "electron-builder",
@@ -170,30 +218,42 @@ async function fetchHubManifestInfo(url = ANTIGRAVITY_HUB_MANIFEST_URL): Promise
  * Fetch the latest Antigravity version and update the global constant.
  * Safe to call before logger is initialized (will silently skip logging).
  */
-export async function initAntigravityVersion(): Promise<void> {
+export async function initAntigravityVersion(options: { ignoreCache?: boolean } = {}): Promise<void> {
   const log = createLogger("version");
   const fallback = getAntigravityVersion();
 
+  // Seed with persisted cache if available and not yet set
+  const cached = options.ignoreCache ? null : loadCachedVersion();
+  if (cached && isSupportedAntigravityVersion(cached.version)) {
+    setAntigravityVersion(cached.version);
+    setAntigravityChangelist(cached.changelist);
+  }
+
   const info = await fetchHubManifestInfo();
   if (!info) {
-    setAntigravityVersion(fallback);
-    log.info("version-fetch-failed", { fallback });
+    const active = getAntigravityVersion();
+    setAntigravityVersion(active);
+    log.info("version-fetch-failed", { fallback: active });
     return;
   }
 
   if (!isSupportedAntigravityVersion(info.version)) {
-    setAntigravityVersion(fallback);
+    const active = getAntigravityVersion();
+    setAntigravityVersion(fallback, true);
+    setAntigravityChangelist(undefined);
     log.warn("version-below-minimum", { version: info.version, minimum: ANTIGRAVITY_MINIMUM_VERSION, fallback });
     return;
   }
 
-  if (info.version !== fallback) {
-    log.info("version-updated", { version: info.version, source: "manifest", previous: fallback });
+  const previous = getAntigravityVersion();
+  if (info.version !== previous) {
+    log.info("version-updated", { version: info.version, source: "manifest", previous });
   } else {
     log.debug("version-unchanged", { version: info.version, source: "manifest" });
   }
-  setAntigravityVersion(info.version);
+  setAntigravityVersion(info.version, true);
   setAntigravityChangelist(info.changelist ?? undefined);
+  saveCachedVersion(info.version, info.changelist ?? undefined);
 }
 
 export const ANTIGRAVITY_VERSION_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -201,9 +261,9 @@ let lastVersionCheck = 0;
 let pendingVersionCheck: Promise<void> | undefined;
 
 /** Coalesce startup checks and refresh long-lived hosts every few hours. */
-export async function refreshAntigravityVersion(): Promise<void> {
+export async function refreshAntigravityVersion(options: { force?: boolean } = {}): Promise<void> {
   if (pendingVersionCheck) return pendingVersionCheck;
-  if (lastVersionCheck && Date.now() - lastVersionCheck < ANTIGRAVITY_VERSION_REFRESH_INTERVAL_MS) return;
+  if (!options.force && lastVersionCheck && Date.now() - lastVersionCheck < ANTIGRAVITY_VERSION_REFRESH_INTERVAL_MS) return;
   pendingVersionCheck = initAntigravityVersion().finally(() => {
     lastVersionCheck = Date.now();
     pendingVersionCheck = undefined;

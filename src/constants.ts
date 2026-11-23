@@ -106,8 +106,8 @@ export function getAntigravityVersion(): string { return antigravityVersion; }
  * Set the runtime Antigravity version. Can only be called once (at startup).
  * Subsequent calls are silently ignored to prevent accidental mutation.
  */
-export function setAntigravityVersion(version: string): void {
-  if (versionLocked) return;
+export function setAntigravityVersion(version: string, force = false): void {
+  if (versionLocked && !force) return;
   antigravityVersion = version;
   versionLocked = true;
 }
