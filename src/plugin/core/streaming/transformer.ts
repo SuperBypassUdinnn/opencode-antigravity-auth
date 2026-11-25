@@ -342,6 +342,177 @@ export function cacheThinkingSignaturesFromResponse(
   }
 }
 
+function hasMeaningfulCandidateParts(parts: unknown): boolean {
+  if (!Array.isArray(parts)) {
+    return false;
+  }
+  return parts.some((part) => {
+    if (!part || typeof part !== 'object') {
+      return false;
+    }
+    const candidatePart = part as Record<string, unknown>;
+    if (typeof candidatePart.text === 'string' && candidatePart.text.length > 0) {
+      return true;
+    }
+    return Boolean(
+      candidatePart.functionCall ||
+      candidatePart.functionResponse ||
+      candidatePart.inlineData ||
+      candidatePart.fileData ||
+      candidatePart.executableCode ||
+      candidatePart.codeExecutionResult,
+    );
+  });
+}
+
+function isMeaningfulRawSseLine(line: string): boolean {
+  if (!line.startsWith('data:')) {
+    return false;
+  }
+  const json = line.slice(5).trim();
+  if (!json || json === '[DONE]') {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(json) as {
+      error?: unknown;
+      response?: unknown;
+      candidates?: unknown;
+    };
+    if (parsed.error !== undefined) {
+      return true;
+    }
+    const payload = (
+      parsed.response && typeof parsed.response === 'object'
+        ? parsed.response
+        : parsed
+    ) as {
+      candidates?: Array<{
+        finishReason?: unknown;
+        content?: { parts?: unknown };
+      }>;
+    };
+    if (Array.isArray(payload.candidates)) {
+      for (const candidate of payload.candidates) {
+        if (hasMeaningfulCandidateParts(candidate?.content?.parts)) {
+          return true;
+        }
+        // Non-STOP terminal reasons (SAFETY, MAX_TOKENS, RECITATION, etc.)
+        // carry real termination semantics for the SDK and should stream through.
+        if (
+          typeof candidate?.finishReason === 'string' &&
+          candidate.finishReason.length > 0 &&
+          candidate.finishReason !== 'STOP'
+        ) {
+          return true;
+        }
+      }
+    }
+  } catch {
+    // Wait for complete/valid JSON or EOF
+  }
+  return false;
+}
+
+export interface StreamingEmptyProbeResult {
+  empty: boolean;
+  response: Response;
+}
+
+/**
+ * Peeks at an HTTP 200 SSE stream only until the first meaningful candidate
+ * chunk (or upstream error / non-STOP finishReason) arrives, then immediately
+ * hands back a pass-through Response that replays the buffered prefix and
+ * streams all remaining chunks in real time. If the upstream closes the stream
+ * before emitting any meaningful content (e.g. usageMetadata-only or empty
+ * text/STOP chunks), resolves `{ empty: true }` so the caller can retry before
+ * any synthetic STOP chunk reaches the AI SDK.
+ */
+export async function probeStreamingResponseForEmpty(
+  response: Response,
+): Promise<StreamingEmptyProbeResult> {
+  if (!response.body) {
+    return { empty: true, response };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const bufferedChunks: Uint8Array[] = [];
+  let lineBuffer = '';
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        lineBuffer += decoder.decode();
+        if (lineBuffer && isMeaningfulRawSseLine(lineBuffer)) {
+          break;
+        }
+        return { empty: true, response };
+      }
+
+      if (value && value.byteLength > 0) {
+        bufferedChunks.push(value);
+        lineBuffer += decoder.decode(value, { stream: true });
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop() ?? '';
+
+        let meaningful = false;
+        for (const line of lines) {
+          if (isMeaningfulRawSseLine(line)) {
+            meaningful = true;
+            break;
+          }
+        }
+        if (meaningful) {
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    void reader.cancel(error).catch(() => {});
+    throw error;
+  }
+
+  let prefixIndex = 0;
+  const passthrough = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (prefixIndex < bufferedChunks.length) {
+        const chunk = bufferedChunks[prefixIndex++];
+        if (prefixIndex >= bufferedChunks.length) {
+          bufferedChunks.length = 0;
+        }
+        if (chunk) {
+          controller.enqueue(chunk);
+        }
+        return;
+      }
+
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      if (value) {
+        controller.enqueue(value);
+      }
+    },
+    cancel(reason) {
+      bufferedChunks.length = 0;
+      return reader.cancel(reason);
+    },
+  });
+
+  return {
+    empty: false,
+    response: new Response(passthrough, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers),
+    }),
+  };
+}
+
 export function createStreamingTransformer(
   signatureStore: SignatureStore,
   callbacks: StreamingCallbacks,
@@ -384,7 +555,7 @@ export function createStreamingTransformer(
           if (typeof candidate?.finishReason === 'string' && candidate.finishReason.length > 0) {
             hasSeenFinishReason = true;
           }
-          if (Array.isArray(candidate?.content?.parts) && candidate.content.parts.length > 0) {
+          if (hasMeaningfulCandidateParts(candidate?.content?.parts)) {
             hasSeenCandidateContent = true;
           }
         }

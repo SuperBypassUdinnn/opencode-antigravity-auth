@@ -2002,3 +2002,62 @@ describe("free account first", () => {
   })
 })
 
+describe("streaming empty response retry", () => {
+  it("retries when SSE stream ends with usageMetadata-only and succeeds on a later attempt", async () => {
+    state.configOverrides = { empty_response_max_attempts: 3, empty_response_retry_delay_ms: 500 }
+    let streamCalls = 0
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "refreshed-access", expires_in: 3600 })
+      }
+      streamCalls += 1
+      if (streamCalls <= 2) {
+        return new Response(
+          `data: ${JSON.stringify({ response: { usageMetadata: { promptTokenCount: 478552, totalTokenCount: 478552 } } })}\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      }
+      return new Response(
+        `data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "recovered" }] }, finishReason: "STOP" }] } })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+    })
+
+    const adapter = await host({ connection: false })
+    const { sdk } = await adapter.sdk()
+    const parts = await stream(sdk)
+    const text = parts
+      .filter((p): p is Extract<typeof p, { type: "text-delta" }> => p.type === "text-delta")
+      .map(p => p.delta)
+      .join("")
+    expect(streamCalls).toBe(3)
+    expect(text).toContain("recovered")
+  })
+
+  it("throws EmptyResponseError after exhausting streaming retries instead of rotating all accounts", async () => {
+    state.configOverrides = { empty_response_max_attempts: 3, empty_response_retry_delay_ms: 500 }
+    state.storage!.accounts.push({
+      ...pool().accounts[0]!,
+      email: "second@example.test",
+      refreshToken: "second",
+    })
+    let streamCalls = 0
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "refreshed-access", expires_in: 3600 })
+      }
+      streamCalls += 1
+      return new Response(
+        `data: ${JSON.stringify({ response: { usageMetadata: { promptTokenCount: 478552, totalTokenCount: 478552 } } })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+    })
+
+    const adapter = await host({ connection: false })
+    const { sdk } = await adapter.sdk()
+    await expect(stream(sdk)).rejects.toThrow(/returned an empty response after 3 attempts/i)
+    expect(streamCalls).toBe(3)
+  })
+})
