@@ -42,7 +42,7 @@ describe("hasOtherAccountWithAntigravityAvailable soft quota", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
+      gemini: { remainingFraction: 0.01, modelCount: 1 },
     });
 
     const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
@@ -62,7 +62,7 @@ describe("hasOtherAccountWithAntigravityAvailable soft quota", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": { remainingFraction: 0.5, modelCount: 1 },
+      gemini: { remainingFraction: 0.5, modelCount: 1 },
     });
 
     const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
@@ -82,7 +82,7 @@ describe("hasOtherAccountWithAntigravityAvailable soft quota", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
+      gemini: { remainingFraction: 0.01, modelCount: 1 },
     });
 
     const hasOther = manager.hasOtherAccountWithAntigravityAvailable(
@@ -115,7 +115,7 @@ describe("getMinWaitTimeForFamily with a soft-quota-blocked pool", () => {
     manager.markRateLimited(accounts[0]!, 3_600_000, "gemini", "antigravity");
     manager.markRateLimited(accounts[1]!, 3_600_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
+      gemini: { remainingFraction: 0.01, modelCount: 1 },
     });
 
     const waitMs = manager.getMinWaitTimeForFamily("gemini", null, "antigravity", false);
@@ -182,7 +182,7 @@ describe("getMinWaitTimeForFamily sees every transient blocker", () => {
     const resetTime = new Date(Date.now() + 5 * 60_000).toISOString();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-flash": { remainingFraction: 0.01, modelCount: 1, resetTime },
+        gemini: { remainingFraction: 0.01, modelCount: 1, resetTime },
       });
     }
 
@@ -205,7 +205,7 @@ describe("getMinWaitTimeForFamily sees every transient blocker", () => {
     const accounts = manager.getAccounts();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-flash": { remainingFraction: 0.01, modelCount: 1 },
+        gemini: { remainingFraction: 0.01, modelCount: 1 },
       });
     }
 
@@ -237,7 +237,7 @@ describe("per-model soft quota decision", () => {
     const manager = createManager();
     const accounts = manager.getAccounts();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.05,
         modelCount: 2,
         models: { "gemini-3.8-flash": { remainingFraction: 0.5 } },
@@ -260,7 +260,7 @@ describe("per-model soft quota decision", () => {
     const accounts = manager.getAccounts();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-flash": {
+        gemini: {
           remainingFraction: 0.05,
           modelCount: 2,
           models: { "gemini-3.8-flash": { remainingFraction: 0.5 } },
@@ -295,7 +295,7 @@ describe("describeAccountBlockers", () => {
     manager.markRateLimited(accounts[0]!, 30_000, "gemini", "antigravity");
     manager.markAccountCoolingDown(accounts[1]!, 30_000, "validation-required");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": { remainingFraction: 0.05, modelCount: 1 },
+      gemini: { remainingFraction: 0.05, modelCount: 1 },
     });
 
     const lines = manager.describeAccountBlockers(
@@ -453,7 +453,7 @@ describe("quota candidates match tier-suffixed cache keys", () => {
     const accounts = manager.getAccounts();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-flash": {
+        gemini: {
           remainingFraction: 0.05,
           modelCount: 2,
           models: { "gemini-3.8-flash-high": { remainingFraction: 0.5 } },
@@ -477,7 +477,7 @@ describe("quota candidates match tier-suffixed cache keys", () => {
     const accounts = manager.getAccounts();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-flash": {
+        gemini: {
           remainingFraction: 0.05,
           modelCount: 3,
           models: {
@@ -501,7 +501,7 @@ describe("quota candidates match tier-suffixed cache keys", () => {
 });
 
 /**
- * Pro accounts expose both a 5-hour and a 1-week quota on gemini-flash.
+ * Pro accounts expose both a 5-hour and a 1-week quota on the unified gemini bucket.
  * When weekly quota drops to or below 1% remaining (>= 99% used), the account
  * must rotate out even when the 5-hour window still has plenty of headroom,
  * and wait/blocker reporting must reflect the weekly reset.
@@ -517,7 +517,7 @@ describe("two-tier weekly soft quota priority", () => {
     const manager = createManager();
     const accounts = manager.getAccounts();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.99,
         weeklyRemainingFraction: 0.008,
         resetTime: new Date(Date.now() + 2 * 3_600_000).toISOString(),
@@ -526,7 +526,7 @@ describe("two-tier weekly soft quota priority", () => {
       },
     });
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.5,
         weeklyRemainingFraction: 0.25,
         modelCount: 1,
@@ -536,7 +536,7 @@ describe("two-tier weekly soft quota priority", () => {
     expect(
       manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
     ).toBe(true);
-    // Gemini 4 Hydrogen shares the gemini-flash pool, so its weekly quota is protected identically.
+    // Gemini 4 Hydrogen shares the unified gemini pool, so its weekly quota is protected identically.
     expect(
       manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-4-hydrogen#high", 99),
     ).toBe(true);
@@ -560,7 +560,7 @@ describe("two-tier weekly soft quota priority", () => {
     const manager = createManager();
     const accounts = manager.getAccounts();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.8,
         weeklyRemainingFraction: 0.015,
         modelCount: 1,
@@ -576,7 +576,7 @@ describe("two-tier weekly soft quota priority", () => {
     const manager = createManager();
     const accounts = manager.getAccounts();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.04,
         weeklyRemainingFraction: 0.5,
         modelCount: 1,
@@ -595,7 +595,7 @@ describe("two-tier weekly soft quota priority", () => {
     const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
     for (const account of accounts) {
       manager.updateQuotaCache(account!.index, {
-        "gemini-flash": {
+        gemini: {
           remainingFraction: 0.9,
           weeklyRemainingFraction: 0.005,
           resetTime: fiveHourReset,
@@ -651,7 +651,7 @@ describe("two-tier weekly soft quota priority", () => {
     const accounts = manager.getAccounts();
     manager.markRateLimited(accounts[0]!, 60_000, "gemini", "antigravity");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.95,
         weeklyRemainingFraction: 0.005,
         modelCount: 1,
@@ -671,15 +671,18 @@ describe("two-tier weekly soft quota priority", () => {
     expect(hasOther).toBe(false);
   });
 
-  it("uses the 1% weekly threshold for weekly-only gemini-argon and protects depleted weekly caches from reconciliation", () => {
+  it("uses the 1% weekly threshold for weekly-only gemini accounts and protects depleted weekly caches from reconciliation", () => {
     const manager = createManager();
     const accounts = manager.getAccounts();
-    // 1.05% remaining on weekly-only gemini-argon should pass 99% weekly limit
-    // even when the 5-hour threshold is 95%.
+    const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    // 1.05% remaining on a weekly-only gemini bucket (resetTime === weeklyResetTime)
+    // should pass the 99% weekly limit even when the 5-hour threshold is 95%.
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-argon": {
+      gemini: {
         remainingFraction: 0.0105,
+        resetTime: weeklyReset,
         weeklyRemainingFraction: 0.0105,
+        weeklyResetTime: weeklyReset,
         modelCount: 1,
       },
     });
@@ -690,7 +693,7 @@ describe("two-tier weekly soft quota priority", () => {
     // Rate-limit marker stays when 5h > 0 but weeklyRemainingFraction === 0.
     manager.markRateLimited(accounts[1]!, 120_000, "gemini", "antigravity", "antigravity-gemini-3.8-flash");
     manager.updateQuotaCache(accounts[1]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.9,
         weeklyRemainingFraction: 0,
         modelCount: 1,
@@ -710,7 +713,7 @@ describe("two-tier weekly soft quota priority", () => {
     const accounts = manager.getAccounts();
     const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.247,
         weeklyRemainingFraction: 0.037,
         resetTime: new Date(Date.now() + 2 * 3_600_000).toISOString(),
@@ -741,7 +744,7 @@ describe("two-tier weekly soft quota priority", () => {
     const accounts = manager.getAccounts();
     const weeklyReset = new Date(Date.now() + 5 * 86_400_000).toISOString();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.247,
         weeklyRemainingFraction: 0.008,
         resetTime: new Date(Date.now() + 2 * 3_600_000).toISOString(),
@@ -767,7 +770,7 @@ describe("two-tier weekly soft quota priority", () => {
     const accounts = manager.getAccounts();
     const fiveHourReset = new Date(Date.now() + 2 * 3_600_000).toISOString();
     manager.updateQuotaCache(accounts[0]!.index, {
-      "gemini-flash": {
+      gemini: {
         remainingFraction: 0.247,
         weeklyRemainingFraction: 0.5,
         resetTime: fiveHourReset,
@@ -779,6 +782,26 @@ describe("two-tier weekly soft quota priority", () => {
 
     expect(
       manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-3.8-flash", 99),
+    ).toBe(true);
+  });
+
+  it("still enforces the 5h soft quota on a Pro account when 5h reset coincides with weekly reset", () => {
+    const manager = createManager();
+    const accounts = manager.getAccounts();
+    const sharedReset = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    manager.updateQuotaCache(accounts[0]!.index, {
+      gemini: {
+        remainingFraction: 0.03,
+        weeklyRemainingFraction: 0.45,
+        resetTime: sharedReset,
+        weeklyResetTime: sharedReset,
+        modelCount: 1,
+        models: { "gemini-4-carbon-high": { remainingFraction: 0.45, resetTime: sharedReset } },
+      },
+    });
+
+    expect(
+      manager.isAccountOverSoftQuota(accounts[0]!, "gemini", 95, 30 * 60_000, "antigravity-gemini-4-carbon#high", 99),
     ).toBe(true);
   });
 });

@@ -16,7 +16,7 @@ vi.mock("./storage", async (importOriginal) => {
 const FUTURE = new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString();
 const PAST = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString();
 
-/** A Pro account: the argon group is what identifies the paid tier. */
+/** A Pro account: advertising Pro-tier models identifies the paid tier. */
 function proAccount(refreshToken: string, overrides: Record<string, unknown> = {}) {
   return {
     refreshToken,
@@ -24,12 +24,12 @@ function proAccount(refreshToken: string, overrides: Record<string, unknown> = {
     addedAt: 1,
     lastUsed: 1,
     cachedQuota: {
-      "gemini-argon": {
+      gemini: {
         remainingFraction: 1,
         weeklyRemainingFraction: 1,
         weeklyResetTime: FUTURE,
         modelCount: 1,
-        models: { "gemini-4-argon-high": { remainingFraction: 1, resetTime: FUTURE } },
+        models: { "gemini-4-carbon-high": { remainingFraction: 1, resetTime: FUTURE } },
       },
     },
     cachedQuotaUpdatedAt: Date.now(),
@@ -45,7 +45,7 @@ function freeAccount(refreshToken: string, overrides: Record<string, unknown> = 
     addedAt: 1,
     lastUsed: 1,
     cachedQuota: {
-      "gemini-flash": { remainingFraction: 1, modelCount: 1 },
+      gemini: { remainingFraction: 1, modelCount: 1 },
     },
     cachedQuotaUpdatedAt: Date.now(),
     ...overrides,
@@ -88,7 +88,7 @@ describe("free account weekly warm-up", () => {
       proAccount("pro"),
       freeAccount("free", {
         cachedQuota: {
-          "gemini-flash": {
+          gemini: {
             remainingFraction: 1,
             weeklyRemainingFraction: 1,
             weeklyResetTime: FUTURE,
@@ -106,7 +106,7 @@ describe("free account weekly warm-up", () => {
       proAccount("pro"),
       freeAccount("free", {
         cachedQuota: {
-          "gemini-flash": {
+          gemini: {
             remainingFraction: 1,
             weeklyRemainingFraction: 1,
             weeklyResetTime: PAST,
@@ -145,7 +145,7 @@ describe("free account weekly warm-up", () => {
       freeAccount("free", {
         // Zero remaining keeps load-time quota reconciliation from clearing the
         // marker, so this test isolates the rate-limit gate.
-        cachedQuota: { "gemini-flash": { remainingFraction: 0, modelCount: 1 } },
+        cachedQuota: { gemini: { remainingFraction: 0, modelCount: 1 } },
         rateLimitResetTimes: { "gemini-antigravity:gemini-3.8-flash-high": Date.now() + 600_000 },
       }),
     ]);

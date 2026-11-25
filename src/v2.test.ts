@@ -1660,7 +1660,7 @@ describe("managed storage rate limit reconciliation", () => {
         ...pool().accounts[0]!,
         id: "stable-first",
         rateLimitResetTimes: { [markerKey]: reset },
-        cachedQuota: { "gemini-flash": { remainingFraction: 1, modelCount: 1, models: { "gemini-3.8-flash-high": { remainingFraction: 1 } } } },
+        cachedQuota: { gemini: { remainingFraction: 1, modelCount: 1, models: { "gemini-3.8-flash-high": { remainingFraction: 1 } } } },
         cachedQuotaUpdatedAt: Date.now(),
       }],
       activeIndex: 0,
@@ -1948,11 +1948,12 @@ describe("free account first", () => {
     const pro = state.storage!.accounts[0]!
     pro.email = "pro@example.test"
     pro.cachedQuota = {
-      "gemini-argon": {
+      gemini: {
         remainingFraction: 1,
         weeklyRemainingFraction: 1,
         weeklyResetTime: new Date(Date.now() + 6 * 86_400_000).toISOString(),
         modelCount: 1,
+        models: { "gemini-4-carbon-high": { remainingFraction: 1 } },
       },
     }
     pro.cachedQuotaUpdatedAt = Date.now()
@@ -1961,7 +1962,7 @@ describe("free account first", () => {
       email: "free@example.test",
       refreshToken: "free",
       // No weekly bucket: Google has not started this window yet.
-      cachedQuota: { "gemini-flash": { remainingFraction: 1, modelCount: 1 } },
+      cachedQuota: { gemini: { remainingFraction: 1, modelCount: 1 } },
       cachedQuotaUpdatedAt: Date.now(),
     }
     state.storage!.accounts.push(free)
@@ -2000,3 +2001,4 @@ describe("free account first", () => {
     expect(tokenBodies(network)[0]).toContain("refresh_token=refresh")
   })
 })
+

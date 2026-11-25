@@ -6,6 +6,12 @@ import {
   ANTIGRAVITY_PROVIDER_ID,
 } from "../constants";
 import { accessTokenExpired, formatRefreshParts, parseRefreshParts } from "./auth";
+import {
+  isProTierModelId,
+  resolveQuotaGroupForModel,
+  resolveQuotaGroupForSummary,
+  type QuotaGroupId,
+} from "./config/models";
 import { logQuotaFetch, logQuotaStatus, debugLogToFile } from "./debug";
 import { ensureProjectContext } from "./project";
 import { refreshAccessToken } from "./token";
@@ -24,15 +30,12 @@ const FETCH_TIMEOUT_MS = 10000;
 const SWEEP_BUDGET_MS = 20000;
 
 /**
- * Independent backend quota buckets. Claude, the shared "Gemini Models" pool,
- * and Gemini 4 Argon (which also serves the Orchestrator planner) each refill
- * on their own windows.
- *
- * `gemini-flash` is the shared pool, not a Flash-only bucket: Flash, Hydrogen,
- * and the Orchestrator worker all draw from it, so every non-Argon Gemini model
- * must be classified here.
+ * Independent backend quota buckets. Claude and the unified "Gemini Models"
+ * pool each refill on their own windows (rolling 5-hour + weekly cap on Pro/Ultra,
+ * weekly on Free). Every Gemini model — Flash, Hydrogen, Neon, Carbon, Argon,
+ * and Orchestrators — draws from the single `"gemini"` bucket.
  */
-export type QuotaGroup = "claude" | "gemini-flash" | "gemini-argon";
+export type QuotaGroup = QuotaGroupId;
 
 export interface QuotaModelSummary {
   remainingFraction?: number;
@@ -51,12 +54,16 @@ export interface QuotaGroupSummary {
   models?: Record<string, QuotaModelSummary>;
 }
 
-/** Check if quota groups indicate a Pro-tier account (Argon weekly bucket or 5.5 model series). */
+/**
+ * Check if quota groups indicate a Pro-tier account (advertises any Pro-tier
+ * model such as Claude 5.5, Gemini 4 Carbon/Neon/Hydrogen/Argon). Note that
+ * internal models like `gemini-4-hydrogen-sonar` appear on free accounts and
+ * are excluded by `isProTierModelId`.
+ */
 export function isProQuotaGroup(groups?: Partial<Record<QuotaGroup, QuotaGroupSummary>> | null): boolean {
   if (!groups) return false;
-  if (groups["gemini-argon"]) return true;
   return Object.values(groups).some(g =>
-    Object.keys(g?.models ?? {}).some(m => m.includes("5-5") || m.includes("argon")),
+    Object.keys(g?.models ?? {}).some(m => isProTierModelId(m) || m.toLowerCase().includes("5-5")),
   );
 }
 
@@ -159,38 +166,8 @@ function parseResetTime(resetTime?: string): number | null {
   return timestamp;
 }
 
-/**
- * Gemini 4 Argon draws from its own weekly-only bucket, separate from the
- * shared Gemini pool (see Google's account dashboard), so its quota must not be
- * min-merged into the shared group. The Orchestrator planner bills that same
- * bucket but its model ID (`gemini-pro-orchestrator-g1-pro`) carries no "argon"
- * substring, so "orchestrator" is matched too. Model names and display names
- * are both checked, and callers must keep the claude branch ahead of this one.
- */
-export function isArgonModelName(value: string): boolean {
-  const lower = value.toLowerCase();
-  // The Orchestrator worker (`gemini-flash-worker-agy`) shares the 5h
-  // gemini-flash bucket even though Google labels it "(Orchestrator)".
-  if (lower.includes("worker") || lower.includes("flash")) {
-    return false;
-  }
-  return lower.includes("argon") || lower.includes("orchestrator");
-}
-
 function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup | null {
-  const combined = `${modelName} ${displayName ?? ""}`.toLowerCase();
-  if (combined.includes("claude")) {
-    return "claude";
-  }
-  if (!combined.includes("gemini")) {
-    return null;
-  }
-  if (isArgonModelName(combined)) {
-    return "gemini-argon";
-  }
-  // Every remaining Gemini model (Flash, Hydrogen, the Orchestrator worker)
-  // refills from the shared "Gemini Models" pool.
-  return "gemini-flash";
+  return resolveQuotaGroupForModel(modelName, displayName);
 }
 
 export function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>, selectable?: Set<string>): QuotaSummary {
@@ -533,15 +510,7 @@ export async function checkAccountsQuota(
           // Merge accurate multi-tier (5h vs weekly) windows from retrieveUserQuotaSummary
           if (userQuotaSummary?.groups) {
             for (const group of userQuotaSummary.groups) {
-              const displayName = (group.displayName ?? "").toLowerCase();
-              let targetKey: QuotaGroup | undefined;
-              if (displayName.includes("claude") || displayName.includes("gpt")) {
-                targetKey = "claude";
-              } else if (displayName.includes("gemini 4 argon") || displayName.includes("argon")) {
-                targetKey = "gemini-argon";
-              } else if (displayName.includes("gemini")) {
-                targetKey = "gemini-flash";
-              }
+              const targetKey = resolveQuotaGroupForSummary(group.displayName ?? "");
 
               if (targetKey && quotaResult.groups[targetKey]) {
                 const targetGroup = quotaResult.groups[targetKey]!;
@@ -555,17 +524,10 @@ export async function checkAccountsQuota(
                     }
                   } else if (bucket.window === "weekly" || (bucket.displayName ?? "").toLowerCase().includes("weekly")) {
                     if (bucket.remainingFraction !== undefined) {
-                      const normalized = normalizeRemainingFraction(bucket.remainingFraction);
-                      targetGroup.weeklyRemainingFraction = normalized;
-                      if (targetKey === "gemini-argon") {
-                        targetGroup.remainingFraction = normalized;
-                      }
+                      targetGroup.weeklyRemainingFraction = normalizeRemainingFraction(bucket.remainingFraction);
                     }
                     if (bucket.resetTime) {
                       targetGroup.weeklyResetTime = bucket.resetTime;
-                      if (targetKey === "gemini-argon") {
-                        targetGroup.resetTime = bucket.resetTime;
-                      }
                     }
                   }
                 }

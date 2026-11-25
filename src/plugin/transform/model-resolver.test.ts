@@ -364,6 +364,7 @@ describe("advertised tier-suffix model IDs", () => {
   const advertised = [
     "claude-opus-5-5-high",
     "claude-sonnet-5-5-high",
+    "gemini-4-carbon-high",
     "gemini-4-argon-high",
     "gemini-3.8-flash-high",
     "gpt-oss-120b-medium",
@@ -432,6 +433,15 @@ describe("tiered catalog families", () => {
   it("leaves families that publish a real base ID untouched", () => {
     expect(applyTierModelSuffix("gemini-3-flash", "high")).toBe("gemini-3-flash");
     expect(applyTierModelSuffix("claude-sonnet-4-6", "high")).toBe("claude-sonnet-4-6");
+  });
+
+  it("rewrites the Gemini 4 Carbon tiers (low, medium, high)", () => {
+    expect(applyTierModelSuffix("gemini-4-carbon", "low")).toBe("gemini-4-carbon-low");
+    expect(applyTierModelSuffix("gemini-4-carbon", "medium")).toBe("gemini-4-carbon-medium");
+    expect(applyTierModelSuffix("gemini-4-carbon", "high")).toBe("gemini-4-carbon-high");
+    expect(applyTierModelSuffix("antigravity-gemini-4-carbon", "high")).toBe("antigravity-gemini-4-carbon-high");
+    expect(publishedTierFor("gemini-4-carbon", "xhigh")).toBe("low");
+    expect(publishedTierFor("antigravity-gemini-4-carbon", "high")).toBe("high");
   });
 
   it("rewrites the Gemini 4 Hydrogen tiers, including xhigh", () => {
@@ -510,20 +520,19 @@ describe("getModelFamily", () => {
     expect(getModelFamily("antigravity-claude-opus-5-5-high")).toBe("claude");
   });
 
-  it("classifies argon and orchestrator models", () => {
-    expect(getModelFamily("gemini-4-argon-high")).toBe("gemini-argon");
-    expect(getModelFamily("antigravity-gemini-4-argon")).toBe("gemini-argon");
-    expect(getModelFamily("gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
-  });
-
-  it("classifies all remaining gemini models as gemini-flash", () => {
-    expect(getModelFamily("gemini-3.8-flash")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-4-hydrogen")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-4-hydrogen-high")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-4-neon")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-4-neon-high")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-flash-worker-agy")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-2.5-pro")).toBe("gemini-flash");
-    expect(getModelFamily("gemini-3-flash")).toBe("gemini-flash");
+  it("classifies all gemini models (including carbon, argon, hydrogen, neon, flash, and orchestrators) as unified gemini", () => {
+    expect(getModelFamily("gemini-4-carbon")).toBe("gemini");
+    expect(getModelFamily("gemini-4-carbon-high")).toBe("gemini");
+    expect(getModelFamily("gemini-4-argon-high")).toBe("gemini");
+    expect(getModelFamily("antigravity-gemini-4-argon")).toBe("gemini");
+    expect(getModelFamily("gemini-pro-orchestrator-g1-pro")).toBe("gemini");
+    expect(getModelFamily("gemini-3.8-flash")).toBe("gemini");
+    expect(getModelFamily("gemini-4-hydrogen")).toBe("gemini");
+    expect(getModelFamily("gemini-4-hydrogen-high")).toBe("gemini");
+    expect(getModelFamily("gemini-4-neon")).toBe("gemini");
+    expect(getModelFamily("gemini-4-neon-high")).toBe("gemini");
+    expect(getModelFamily("gemini-flash-worker-agy")).toBe("gemini");
+    expect(getModelFamily("gemini-2.5-pro")).toBe("gemini");
+    expect(getModelFamily("gemini-3-flash")).toBe("gemini");
   });
 });

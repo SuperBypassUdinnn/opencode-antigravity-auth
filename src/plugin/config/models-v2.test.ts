@@ -109,11 +109,48 @@ describe("OpenCode V2 models", () => {
       ],
     })
   })
+
+  it("collapses the Gemini 4 Carbon tiers into one model with three variants", () => {
+    const catalog = buildAccountModelDefinitions({
+      "gemini-4-carbon-low": { displayName: "Gemini 4 Carbon (Low)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-carbon-medium": { displayName: "Gemini 4 Carbon (Medium)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-carbon-high": { displayName: "Gemini 4 Carbon (High)", maxTokens: 1048576, maxOutputTokens: 262144 },
+    })
+
+    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-4-carbon"])
+    expect(catalog["antigravity-gemini-4-carbon"]).toMatchObject({
+      name: "Gemini 4 Carbon (Antigravity)",
+      limit: { context: 1048576, output: 262144 },
+      variants: [
+        { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
+        { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
+        { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
+      ],
+    })
+  })
+
+  it("filters out retired model bases even when still returned by the backend", () => {
+    const retiredBases = new Set(["gemini-4-argon", "gemini-3.8-flash", "gpt-oss-120b"])
+    const catalog = buildAccountModelDefinitions(
+      {
+        "gemini-4-argon-high": { displayName: "Gemini 4 Argon (High)", maxTokens: 1048576, maxOutputTokens: 65535 },
+        "gemini-3.8-flash-low": { displayName: "Gemini 3.8 Flash (Low)", maxTokens: 1048576, maxOutputTokens: 65536 },
+        "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)", maxTokens: 1048576, maxOutputTokens: 65536 },
+        "gpt-oss-120b-medium": { displayName: "GPT-OSS 120B (Medium)", maxTokens: 131072, maxOutputTokens: 32768 },
+        "gemini-4-carbon-low": { displayName: "Gemini 4 Carbon (Low)", maxTokens: 1048576, maxOutputTokens: 262144 },
+        "gemini-4-carbon-high": { displayName: "Gemini 4 Carbon (High)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      },
+      { retiredBases },
+    )
+
+    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-4-carbon"])
+  })
 })
 
 describe("pre-discovery model gate", () => {
   it("includes the three new pro models in the fallback definitions", () => {
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-argon"]).toBeDefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-carbon"]).toBeDefined()
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"]).toBeDefined()
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-neon"]).toBeDefined()
     expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-claude-sonnet-5-5"]).toBeDefined()
@@ -123,6 +160,8 @@ describe("pre-discovery model gate", () => {
   it("flags gated bases regardless of prefix case and tier suffix", () => {
     expect(isPreDiscoveryGatedModel("antigravity-gemini-4-argon-high")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-gemini-4-argon")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-carbon-high")).toBe(true)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-carbon")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-gemini-4-neon-high")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-gemini-4-neon")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-claude-sonnet-5-5")).toBe(true)

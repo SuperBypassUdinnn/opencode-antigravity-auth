@@ -1,11 +1,11 @@
 import { formatRefreshParts, parseRefreshParts } from "./auth";
-import { loadAccounts, saveAccounts, updateAccountCredentials, updateAccounts, type AccountStorageV4, type AccountMetadataV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle, type CooldownReason } from "./storage";
+import { loadAccounts, normalizeCachedQuota, saveAccounts, updateAccountCredentials, updateAccounts, type AccountStorageV4, type AccountMetadataV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle, type CooldownReason } from "./storage";
 import type { OAuthAuthDetails, RefreshParts } from "./types";
 import type { AccountSelectionStrategy } from "./config/schema";
 import { getHealthTracker, getTokenTracker, selectHybridAccount, type AccountWithMetrics } from "./rotation";
 import { generateFingerprint, updateFingerprintVersion, type Fingerprint, type FingerprintVersion, MAX_FINGERPRINT_HISTORY } from "./fingerprint";
-import { isArgonModelName, isProQuotaGroup, type QuotaGroup, type QuotaGroupSummary, type QuotaModelSummary } from "./quota";
-import { getModelFamily } from "./transform/model-resolver";
+import { isProQuotaGroup, type QuotaGroup, type QuotaGroupSummary, type QuotaModelSummary } from "./quota";
+import { resolveQuotaGroupForModel } from "./config/models";
 import { debugLogToFile } from "./debug";
 import { formatAccountLabel, formatWaitTime } from "./logging-utils";
 import { formatResetStamp } from "./reset-time";
@@ -361,32 +361,19 @@ function modelForQuotaKey(key: QuotaKey): string | null {
 
 /**
  * Resolve the quota group for soft quota checks.
- * 
- * When a model string is available, we can precisely determine the quota group.
- * When model is null/undefined, we fall back based on family:
- * - Claude → "claude" quota group
- * - Gemini → "gemini-flash" (the shared "Gemini Models" pool)
- * 
+ *
+ * - Claude -> "claude" quota group
+ * - Gemini -> "gemini" (the unified "Gemini Models" pool)
+ *
  * @param family - The model family ("claude" | "gemini")
  * @param model - Optional model string for precise resolution
  * @returns The QuotaGroup to use for soft quota checks
  */
 export function resolveQuotaGroup(family: ModelFamily, model?: string | null): QuotaGroup {
   if (model) {
-    // Claude keeps its own branch first (mirroring classifyQuotaGroup), so an
-    // unusual claude id can never be read against the argon bucket.
-    if (getModelFamily(model) === "claude") {
-      return "claude";
-    }
-    // Gemini 4 Argon and the Orchestrator planner draw from their own
-    // weekly-only bucket; every other Gemini model (Flash, Hydrogen, the
-    // Orchestrator worker) uses the shared "Gemini Models" pool.
-    if (isArgonModelName(model)) {
-      return "gemini-argon";
-    }
-    return "gemini-flash";
+    return resolveQuotaGroupForModel(model) ?? (family === "claude" ? "claude" : "gemini");
   }
-  return family === "claude" ? "claude" : "gemini-flash";
+  return family === "claude" ? "claude" : "gemini";
 }
 
 /** Candidate keys for a requested model in the per-model quota map: the raw
@@ -507,11 +494,21 @@ function evaluateSoftQuota(
         };
       }
     }
-    // gemini-argon has only a weekly bucket (no 5-hour window), so do not apply
-    // the tighter 5-hour threshold to the same weekly remaining fraction.
-    if (quotaGroup === "gemini-argon") {
-      return { over: false };
-    }
+  }
+
+  // A weekly-only group (Free account) reports the same weekly reset stamp and
+  // remaining fraction on both the group and weekly fields, with no 5-hour
+  // window; do not apply the tighter 5-hour threshold to that weekly fraction.
+  // Pro two-tier accounts remain subject to the 5h threshold even when the 5h
+  // window reset coincides with the weekly reset boundary.
+  const isWeeklyOnlyGroup =
+    !isProQuotaGroup(account.cachedQuota) &&
+    entryMatchesWeeklyReset(groupData.resetTime, groupData.weeklyResetTime) &&
+    (groupData.remainingFraction == null ||
+      groupData.weeklyRemainingFraction == null ||
+      Math.abs(groupData.remainingFraction - groupData.weeklyRemainingFraction) <= 0.01);
+  if (isWeeklyOnlyGroup) {
+    return { over: false };
   }
 
   if (thresholdPercent >= 100) {
@@ -703,7 +700,7 @@ export class AccountManager {
             touchedForQuota: {},
             fingerprint: acc.fingerprint ?? generateFingerprint(),
             fingerprintHistory: acc.fingerprintHistory ?? [],
-            cachedQuota: acc.cachedQuota as Partial<Record<QuotaGroup, QuotaGroupSummary>> | undefined,
+            cachedQuota: normalizeCachedQuota(acc.cachedQuota) as Partial<Record<QuotaGroup, QuotaGroupSummary>> | undefined,
             cachedQuotaUpdatedAt: acc.cachedQuotaUpdatedAt,
             licenseBlockedUntil: acc.licenseBlockedUntil,
             licenseBlockReason: acc.licenseBlockReason,
@@ -2004,9 +2001,7 @@ export class AccountManager {
     quotaGroups: Partial<Record<QuotaGroup, QuotaGroupSummary>>,
   ): boolean {
     const claudeAvailable = groupHasAvailableQuota(quotaGroups.claude);
-    const sharedGeminiAvailable = groupHasAvailableQuota(quotaGroups["gemini-flash"]);
-    const argonAvailable = groupHasAvailableQuota(quotaGroups["gemini-argon"]);
-    const geminiAvailable = sharedGeminiAvailable || argonAvailable;
+    const geminiAvailable = groupHasAvailableQuota(quotaGroups.gemini);
     if (!claudeAvailable && !geminiAvailable) {
       return false;
     }
@@ -2019,16 +2014,10 @@ export class AccountManager {
 
       const model = modelForQuotaKey(key);
       if (model) {
-        // Argon-aware: a marker for an argon model is vouched for by the argon
-        // bucket, not by the shared Gemini pool.
         const quotaGroup = resolveQuotaGroup(family, model);
         if (quotaGroup === "claude" ? !claudeAvailable : !modelHasAvailableQuota(quotaGroups[quotaGroup], model)) {
           continue;
         }
-      } else if (family !== "claude" && !sharedGeminiAvailable) {
-        // A base family key covers the shared Gemini pool only, so argon quota
-        // cannot vouch for it.
-        continue;
       }
 
       const resetTime = account.rateLimitResetTimes[key];

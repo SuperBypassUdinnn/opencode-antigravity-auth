@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import { AntigravityAccountsRpc, type AccountSummary } from "./account-rpc.ts"
 import { parseRefreshParts } from "./auth.ts"
+import { QUOTA_BUCKET_BY_ID, QUOTA_BUCKET_ORDER } from "./config/models.ts"
 import { checkAccountsQuota, isProQuotaGroup, type QuotaGroup } from "./quota.ts"
 import { accountTokenHash, loadAccounts, matchesAccountToken, saveAccountCredentials, updateAccountCredentials, updateAccounts, type AccountMetadataV3 } from "./storage.ts"
 import { formatResetStamp, formatTwoTierQuotaReport } from "./reset-time.ts"
@@ -89,8 +90,8 @@ export async function registerAccountManagement(
           const groups = result.quota?.groups ?? {}
           const isProAccount = isProQuotaGroup(groups)
 
-          // Stable order for bucket groups so UI output never shuffles
-          const groupOrder: QuotaGroup[] = ["claude", "gemini-flash", "gemini-argon"]
+          // Stable order for bucket groups driven by QUOTA_BUCKET_REGISTRY
+          const groupOrder: readonly QuotaGroup[] = QUOTA_BUCKET_ORDER
           const orderedGroups = groupOrder
             .filter(g => groups[g] !== undefined)
             .map(g => [g, groups[g]!] as const)
@@ -101,21 +102,15 @@ export async function registerAccountManagement(
           }
 
           for (const [group, quota] of orderedGroups) {
-            if (isProAccount && (group === "claude" || group === "gemini-flash")) {
+            if (isProAccount && QUOTA_BUCKET_BY_ID.get(group)?.twoTierOnPro) {
               const weeklyData = quota.weeklyRemainingFraction !== undefined || quota.weeklyResetTime
                 ? { remainingFraction: quota.weeklyRemainingFraction, resetTime: quota.weeklyResetTime }
-                : groups["gemini-argon"]
-                  ? { remainingFraction: undefined, resetTime: groups["gemini-argon"].weeklyResetTime ?? groups["gemini-argon"].resetTime }
-                  : undefined
+                : undefined
               const report = formatTwoTierQuotaReport(quota, weeklyData)
               lines.push(`  Antigravity ${group}: ${report}`)
             } else {
-              const fraction = group === "gemini-argon"
-                ? (quota.weeklyRemainingFraction ?? quota.remainingFraction)
-                : quota.remainingFraction
-              const resetAt = group === "gemini-argon"
-                ? (quota.weeklyResetTime ?? quota.resetTime)
-                : quota.resetTime
+              const fraction = quota.remainingFraction ?? quota.weeklyRemainingFraction
+              const resetAt = quota.resetTime ?? quota.weeklyResetTime
               const percent = fraction === undefined ? "unknown" : `${Math.round(fraction * 100)}% remaining`
               const resetPart = resetAt ? `; resets ${formatResetStamp(resetAt)}` : ""
               lines.push(`  Antigravity ${group}: ${percent}${resetPart}`)

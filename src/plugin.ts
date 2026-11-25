@@ -32,7 +32,8 @@ import {
   prepareAntigravityRequest,
   transformAntigravityResponse,
 } from "./plugin/request";
-import { resolveModelWithTier } from "./plugin/transform/model-resolver";
+import { getModelFamily, resolveModelWithTier } from "./plugin/transform/model-resolver";
+import { QUOTA_BUCKET_REGISTRY } from "./plugin/config/models";
 import {
   isEmptyResponseBody,
   createSyntheticGeminiErrorResponse,
@@ -3474,22 +3475,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     } else {
                       const groups = res.quota!.groups;
                       const isProAccount = isProQuotaGroup(groups);
-                      const weeklyResetTime = groups["gemini-argon"]?.resetTime || undefined;
 
-                      const groupEntries = [
-                        { name: "Claude", groupKey: "claude", data: groups.claude },
-                        { name: "Gemini 3 Flash", groupKey: "gemini-flash", data: groups["gemini-flash"] },
-                        { name: "Gemini 4 Argon", groupKey: "gemini-argon", data: groups["gemini-argon"] },
-                      ].filter(g => g.data);
+                      const groupEntries = QUOTA_BUCKET_REGISTRY
+                        .map(bucket => ({
+                          name: bucket.label,
+                          groupKey: bucket.id,
+                          twoTierOnPro: bucket.twoTierOnPro,
+                          data: groups[bucket.id],
+                        }))
+                        .filter(g => g.data);
                       
                       groupEntries.forEach((g, idx) => {
                         const isLast = idx === groupEntries.length - 1;
                         const connector = isLast ? "└─" : "├─";
                         const bar = createProgressBar(g.data!.remainingFraction);
                         let reset: string;
-                        if (isProAccount && (g.groupKey === "claude" || g.groupKey === "gemini-flash")) {
+                        if (isProAccount && g.twoTierOnPro) {
                           const wFraction = g.data!.weeklyRemainingFraction;
-                          const wReset = g.data!.weeklyResetTime || weeklyResetTime;
+                          const wReset = g.data!.weeklyResetTime;
                           const shortStamp = formatResetStamp(g.data!.resetTime);
                           const weeklyStamp = formatResetStamp(wReset);
                           const wPct = wFraction !== undefined ? ` ${Math.round(wFraction * 100)}%` : " unknown";
@@ -4202,10 +4205,7 @@ function extractModelFromUrlWithSuffix(urlString: string): string | null {
 
 function getModelFamilyFromUrl(urlString: string): ModelFamily {
   const model = extractModelFromUrl(urlString);
-  let family: ModelFamily = "gemini";
-  if (model && model.includes("claude")) {
-    family = "claude";
-  }
+  const family: ModelFamily = model ? getModelFamily(model) : "gemini";
   if (isDebugEnabled()) {
     logModelFamily(urlString, model, family);
   }

@@ -709,7 +709,7 @@ describe("Storage Migration", () => {
       expect(gitignoreCall).toBeDefined();
     });
 
-    it("strips legacy gemini-pro from cachedQuota on load", async () => {
+    it("migrates legacy gemini-pro, gemini-flash, and gemini-argon keys into unified gemini on load", async () => {
       const v4Data = {
         version: 4,
         accounts: [
@@ -719,7 +719,19 @@ describe("Storage Migration", () => {
             lastUsed: now,
             cachedQuota: {
               "gemini-pro": { remainingFraction: 0.8, modelCount: 1 },
-              "gemini-flash": { remainingFraction: 0.9, modelCount: 1 },
+              "gemini-flash": {
+                remainingFraction: 0.9,
+                resetTime: "2030-01-01T05:00:00Z",
+                modelCount: 1,
+                models: { "gemini-3.8-flash-high": { remainingFraction: 0.9 } },
+              },
+              "gemini-argon": {
+                remainingFraction: 0.7,
+                weeklyRemainingFraction: 0.7,
+                weeklyResetTime: "2030-01-08T00:00:00Z",
+                modelCount: 1,
+                models: { "gemini-4-argon-high": { remainingFraction: 0.7 } },
+              },
             },
           },
         ],
@@ -736,8 +748,66 @@ describe("Storage Migration", () => {
       });
 
       const result = await loadAccounts();
-      expect(result?.accounts[0]?.cachedQuota?.["gemini-pro"]).toBeUndefined();
-      expect(result?.accounts[0]?.cachedQuota?.["gemini-flash"]).toBeDefined();
+      const cached = result?.accounts[0]?.cachedQuota as Record<string, unknown> | undefined;
+      expect(cached?.["gemini-pro"]).toBeUndefined();
+      expect(cached?.["gemini-flash"]).toBeUndefined();
+      expect(cached?.["gemini-argon"]).toBeUndefined();
+      expect(cached?.["gemini"]).toEqual({
+        remainingFraction: 0.9,
+        resetTime: "2030-01-01T05:00:00Z",
+        weeklyRemainingFraction: 0.7,
+        weeklyResetTime: "2030-01-08T00:00:00Z",
+        modelCount: 2,
+        models: {
+          "gemini-4-argon-high": { remainingFraction: 0.7 },
+          "gemini-3.8-flash-high": { remainingFraction: 0.9 },
+        },
+      });
+    });
+
+    it("preserves weekly reset semantics when migrating an argon-only legacy cachedQuota", async () => {
+      const v4Data = {
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r-argon-only",
+            addedAt: now,
+            lastUsed: now,
+            cachedQuota: {
+              "gemini-argon": {
+                remainingFraction: 0.4,
+                resetTime: "2030-01-08T00:00:00Z",
+                modelCount: 1,
+                models: { "gemini-4-argon-high": { remainingFraction: 0.4, resetTime: "2030-01-08T00:00:00Z" } },
+              },
+            },
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      vi.mocked(fs.readFile).mockImplementation((path) => {
+        if ((path as string).endsWith(".gitignore")) {
+          const error = new Error("ENOENT") as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          return Promise.reject(error);
+        }
+        return Promise.resolve(JSON.stringify(v4Data));
+      });
+
+      const result = await loadAccounts();
+      const cached = result?.accounts[0]?.cachedQuota as Record<string, unknown> | undefined;
+      expect(cached?.["gemini-argon"]).toBeUndefined();
+      expect(cached?.["gemini"]).toEqual({
+        remainingFraction: 0.4,
+        resetTime: "2030-01-08T00:00:00Z",
+        weeklyRemainingFraction: 0.4,
+        weeklyResetTime: "2030-01-08T00:00:00Z",
+        modelCount: 1,
+        models: {
+          "gemini-4-argon-high": { remainingFraction: 0.4, resetTime: "2030-01-08T00:00:00Z" },
+        },
+      });
     });
   });
 

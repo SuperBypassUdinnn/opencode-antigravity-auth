@@ -6,7 +6,13 @@
  */
 
 import type { ResolvedModel, ThinkingTier, GoogleSearchConfig } from "./types";
-import { XHIGH_TIER_BUDGET } from "../config/models";
+import {
+  SEEDED_ADVERTISED_TIER_SUFFIX_IDS,
+  SEEDED_MODEL_ALIASES,
+  SEEDED_TIER_SUFFIX_FAMILIES,
+  XHIGH_TIER_BUDGET,
+  resolveModelFamilyForRouting,
+} from "../config/models";
 
 export interface ModelResolverOptions {
   cli_first?: boolean;
@@ -51,11 +57,8 @@ export const MODEL_ALIASES: Record<string, string> = {
   "gemini-3-flash-medium": "gemini-3-flash",
   "gemini-3-flash-high": "gemini-3-flash",
 
-  // Claude proxy names (gemini- prefix for compatibility)
-  "gemini-claude-opus-4-6-thinking-low": "claude-opus-4-6-thinking",
-  "gemini-claude-opus-4-6-thinking-medium": "claude-opus-4-6-thinking",
-  "gemini-claude-opus-4-6-thinking-high": "claude-opus-4-6-thinking",
-  "gemini-claude-sonnet-4-6": "claude-sonnet-4-6",
+  // Legacy proxy aliases derived from non-retired entries in config/models.ts
+  ...SEEDED_MODEL_ALIASES,
 
   // Image generation models - only gemini-3-pro-image is available via Antigravity API
   // Note: gemini-2.5-flash-image (Nano Banana) is NOT supported by Antigravity - only Google AI API
@@ -66,16 +69,9 @@ export const MODEL_ALIASES: Record<string, string> = {
  * Model IDs that Antigravity fetchAvailableModels advertises verbatim with a
  * tier-like suffix. The suffix is part of the real model ID, so it must reach the
  * API unchanged instead of being stripped as a legacy thinking-tier alias.
+ * Seeded from non-retired per-tier and discovered-only entries in config/models.ts.
  */
-const advertisedModelIds = new Set([
-  "claude-opus-5-5-high",
-  "claude-sonnet-5-5-high",
-  "gemini-4-argon-high",
-  "gemini-3.8-flash-high",
-  "gemini-3.8-flash-medium",
-  "gemini-3.8-flash-low",
-  "gpt-oss-120b-medium",
-]);
+const advertisedModelIds = new Set<string>(SEEDED_ADVERTISED_TIER_SUFFIX_IDS);
 export const ADVERTISED_TIER_SUFFIX_MODEL_IDS: ReadonlySet<string> = advertisedModelIds;
 
 /** Preserve backend IDs discovered from Google's account-specific catalog. */
@@ -213,23 +209,14 @@ export function isAdvertisedTierSuffixModel(model: string): boolean {
 }
 
 /**
- * Families whose backend IDs are per-tier only (e.g. gemini-3.8-flash-low,
+ * Families whose backend IDs are per-tier only (e.g. gemini-4-carbon-low,
  * -medium, -high) with no bare base ID, mapped to the tiers that family actually
- * publishes. The plugin publishes one model for such a family, so the selected
- * variant has to select the backend ID.
- *
- * gemini-3.8-flash and gemini-4-hydrogen are seeded because they are known
- * families before discovery runs; discovered families register themselves so
- * new ones work without a release.
+ * publishes. Seeded from non-retired per-tier entries in config/models.ts;
+ * discovered families register themselves so new ones work without a release.
  */
-const tierSuffixModelFamilies = new Map<string, ReadonlySet<string>>([
-  ["gemini-3.8-flash", new Set<ThinkingTier>(["low", "medium", "high"])],
-  ["gemini-4-argon", new Set<ThinkingTier>(["low", "medium", "high"])],
-  ["gemini-4-hydrogen", new Set<ThinkingTier>(["low", "medium", "high", "xhigh"])],
-  ["gemini-4-neon", new Set<ThinkingTier>(["low", "medium", "high", "xhigh"])],
-  ["claude-sonnet-5-5", new Set<ThinkingTier>(["low", "medium", "high"])],
-  ["claude-opus-5-5", new Set<ThinkingTier>(["low", "medium", "high"])],
-]);
+const tierSuffixModelFamilies = new Map<string, ReadonlySet<string>>(
+  SEEDED_TIER_SUFFIX_FAMILIES.map(([base, tiers]) => [base, new Set<string>(tiers)]),
+);
 
 /** Tiers tried in order when the requested level is not published for a family. */
 const TIER_FALLBACK_ORDER: readonly ThinkingTier[] = ["low", "medium", "high", "xhigh"];
@@ -420,17 +407,10 @@ export function resolveModelWithTier(requestedModel: string, options: ModelResol
 }
 
 /**
- * Gets the model family for routing decisions.
+ * Gets the model family for routing decisions via the central bucket registry.
  */
-export function getModelFamily(model: string): "claude" | "gemini-flash" | "gemini-argon" {
-  const lower = model.toLowerCase();
-  if (lower.includes("claude")) {
-    return "claude";
-  }
-  if (!lower.includes("worker") && !lower.includes("flash") && (lower.includes("argon") || lower.includes("orchestrator"))) {
-    return "gemini-argon";
-  }
-  return "gemini-flash";
+export function getModelFamily(model: string): "claude" | "gemini" {
+  return resolveModelFamilyForRouting(model);
 }
 
 /**
