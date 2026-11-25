@@ -216,6 +216,56 @@ export interface AccountMetadataV3 {
 
 export const accountTokenHash = (token: string): string => createHash("sha256").update(token).digest("hex").slice(0, 24);
 
+/**
+ * Normalizes legacy per-sub-bucket Gemini keys (`gemini-pro`, `gemini-flash`,
+ * `gemini-argon`) in persisted `cachedQuota` records into the unified `"gemini"`
+ * bucket so existing account files migrate seamlessly without waiting for a
+ * fresh quota sweep.
+ */
+export function normalizeCachedQuota(
+  cachedQuota: AccountMetadataV3["cachedQuota"],
+): AccountMetadataV3["cachedQuota"] {
+  if (!cachedQuota) return cachedQuota;
+  const hasLegacy =
+    "gemini-pro" in cachedQuota ||
+    "gemini-flash" in cachedQuota ||
+    "gemini-argon" in cachedQuota;
+  if (!hasLegacy) return cachedQuota;
+
+  const normalized: NonNullable<AccountMetadataV3["cachedQuota"]> = { ...cachedQuota };
+  const legacyFlash = normalized["gemini-flash"];
+  const legacyArgon = normalized["gemini-argon"];
+  delete normalized["gemini-pro"];
+  delete normalized["gemini-flash"];
+  delete normalized["gemini-argon"];
+
+  if (!normalized.gemini && (legacyFlash || legacyArgon)) {
+    const primary = legacyFlash ?? legacyArgon!;
+    const mergedModels = {
+      ...(legacyArgon?.models ?? {}),
+      ...(legacyFlash?.models ?? {}),
+    };
+    const modelEntries = Object.keys(mergedModels).length;
+    const weeklyRemainingFraction =
+      primary.weeklyRemainingFraction ??
+      legacyArgon?.weeklyRemainingFraction ??
+      legacyArgon?.remainingFraction;
+    const weeklyResetTime =
+      primary.weeklyResetTime ??
+      legacyArgon?.weeklyResetTime ??
+      legacyArgon?.resetTime;
+    normalized.gemini = {
+      ...primary,
+      ...(weeklyRemainingFraction !== undefined ? { weeklyRemainingFraction } : {}),
+      ...(weeklyResetTime !== undefined ? { weeklyResetTime } : {}),
+      modelCount: modelEntries > 0 ? modelEntries : primary.modelCount,
+      ...(modelEntries > 0 ? { models: mergedModels } : {}),
+    };
+  }
+
+  return normalized;
+}
+
 export function matchesAccountToken(account: AccountMetadataV3, token: string): boolean {
   const hash = accountTokenHash(token);
   return account.refreshToken === token || account.id === hash || account.refreshTokenHashes?.includes(hash) === true;
@@ -606,8 +656,8 @@ function normalizeAccountStorage(
   }
 
   for (const account of accounts) {
-    if (account.cachedQuota && "gemini-pro" in account.cachedQuota) {
-      delete account.cachedQuota["gemini-pro"];
+    if (account.cachedQuota) {
+      account.cachedQuota = normalizeCachedQuota(account.cachedQuota);
     }
   }
 

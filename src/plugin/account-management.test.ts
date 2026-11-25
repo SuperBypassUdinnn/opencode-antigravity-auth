@@ -128,7 +128,7 @@ describe("account management", () => {
     else expect(state.storage!.accounts.some(item => item.id === account!.id)).toBe(false)
   })
 
-  it("renders gemini-argon with its weekly fraction and reset stamp", async () => {
+  it("renders unified gemini with its 5h and weekly fraction and reset stamp on Pro accounts", async () => {
     const { handlers } = await host()
     const [account] = await handlers.list({}, callContext)
     const fiveHour = new Date(Date.now() + 2 * 3600_000).toISOString()
@@ -139,22 +139,23 @@ describe("account management", () => {
       quota: {
         modelCount: 2,
         groups: {
-          "gemini-flash": { remainingFraction: 0.9, resetTime: fiveHour, modelCount: 1 },
-          "gemini-argon": {
-            remainingFraction: 0.5,
+          gemini: {
+            remainingFraction: 0.9,
             resetTime: fiveHour,
             weeklyRemainingFraction: 0.85,
             weeklyResetTime: weekly,
-            modelCount: 1,
+            modelCount: 2,
+            models: { "gemini-4-carbon-high": { remainingFraction: 0.85, resetTime: weekly } },
           },
         },
       },
     }])
 
     const result = await handlers.quotas({ id: account!.id }, callContext)
-    const argonLine = result.report.split("\n").find(line => line.includes("Antigravity gemini-argon:"))
-    expect(argonLine).toContain("85% remaining")
-    expect(argonLine).toMatch(/in [45]d /)
+    const geminiLine = result.report.split("\n").find(line => line.includes("Antigravity gemini:"))
+    expect(geminiLine).toContain("5h: 90%")
+    expect(geminiLine).toContain("1w: 85%")
+    expect(geminiLine).toMatch(/in [45]d /)
   })
 
   it("renders bucket groups in a fixed, stable order", async () => {
@@ -165,10 +166,9 @@ describe("account management", () => {
       index: 0,
       status: "ok",
       quota: {
-        modelCount: 3,
+        modelCount: 2,
         groups: {
-          "gemini-argon": { remainingFraction: 0.7, resetTime: reset, modelCount: 1 },
-          "gemini-flash": { remainingFraction: 0.8, resetTime: reset, modelCount: 1 },
+          gemini: { remainingFraction: 0.8, resetTime: reset, modelCount: 1 },
           claude: { remainingFraction: 0.9, resetTime: reset, modelCount: 1 },
         },
       },
@@ -176,10 +176,9 @@ describe("account management", () => {
 
     const result = await handlers.quotas({ id: account!.id }, callContext)
     const lines = result.report.split("\n").filter(line => line.includes("Antigravity "))
-    expect(lines).toHaveLength(3)
+    expect(lines).toHaveLength(2)
     expect(lines[0]).toContain("Antigravity claude:")
-    expect(lines[1]).toContain("Antigravity gemini-flash:")
-    expect(lines[2]).toContain("Antigravity gemini-argon:")
+    expect(lines[1]).toContain("Antigravity gemini:")
   })
 })
 

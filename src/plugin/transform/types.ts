@@ -1,6 +1,6 @@
 import type { HeaderStyle } from "../../constants";
 
-export type ModelFamily = "claude" | "gemini-flash" | "gemini-argon";
+export type ModelFamily = "claude" | "gemini";
 
 export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
 

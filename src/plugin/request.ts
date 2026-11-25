@@ -11,6 +11,7 @@ import {
 } from "../constants";
 import { cacheSignature, getCachedSignature } from "./cache";
 import { getKeepThinking } from "./config";
+import { NON_THINKING_CLAUDE_FALLBACK_IDS } from "./config/models";
 import {
   createStreamingTransformer,
   transformSseLine,
@@ -1068,12 +1069,10 @@ export function prepareAntigravityRequest(
         const hasAssistantHistory = Array.isArray(requestPayload.contents) &&
           requestPayload.contents.some((c: any) => c?.role === "model" || c?.role === "assistant");
 
-        // Ignore client-provided thinkingConfig for claude ids the catalog does
-        // NOT mark as "(Thinking)". Claude Sonnet 4.6 now ships as a thinking
-        // model per Google's catalog, so only catalog-unmarked sonnet stays
-        // non-thinking.
+        // Ignore client-provided thinkingConfig for legacy non-thinking Claude
+        // models unless Google's catalog marks them as thinking-capable.
         const lowerEffective = effectiveModel.toLowerCase();
-        const isClaudeSonnetNonThinking = lowerEffective === "claude-sonnet-4-6" && !isCatalogThinkingModel(effectiveModel);
+        const isClaudeSonnetNonThinking = NON_THINKING_CLAUDE_FALLBACK_IDS.has(lowerEffective) && !isCatalogThinkingModel(effectiveModel);
         const effectiveUserThinkingConfig = (isClaudeSonnetNonThinking || isImageModel) ? undefined : userThinkingConfig;
 
         // For image models, add imageConfig instead of thinkingConfig

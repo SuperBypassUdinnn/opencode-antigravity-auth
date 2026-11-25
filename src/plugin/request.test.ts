@@ -18,6 +18,7 @@ vi.mock("./debug", async (importOriginal) => ({
 import { SKIP_THOUGHT_SIGNATURE, getAntigravityUserAgent } from "../constants";
 import * as config from "./config";
 import { getCachedSignature } from "./cache";
+import { probeStreamingResponseForEmpty } from "./core/streaming";
 import type { SignatureStore, ThoughtBuffer, StreamingCallbacks, StreamingOptions } from "./core/streaming/types";
 
 const {
@@ -1684,6 +1685,123 @@ it("removes x-api-key header", () => {
 
       expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("stream cancelled"));
       expect(debugLogToFile).toHaveBeenCalledWith(expect.stringContaining("user interrupted"));
+    });
+
+    it("treats empty-text parts as lacking content in flush", async () => {
+      const store = createMockSignatureStore();
+      const transformer = createStreamingTransformer(store, defaultCallbacks);
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      const outputChunks: Uint8Array[] = [];
+
+      const writer = transformer.writable.getWriter();
+      const reader = transformer.readable.getReader();
+      const readPromise = (async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) outputChunks.push(value);
+        }
+      })();
+
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "" }] } }] })}\n`));
+      await writer.close();
+      await readPromise;
+
+      const output = outputChunks.map((chunk) => decoder.decode(chunk)).join("");
+      expect(output).toContain("without emitting any content or finish reason");
+    });
+  });
+
+  describe("probeStreamingResponseForEmpty", () => {
+    it("detects usageMetadata-only SSE streams without finishReason as empty", async () => {
+      const ssePayload = `data: ${JSON.stringify({
+        response: {
+          usageMetadata: { promptTokenCount: 478552, totalTokenCount: 478552 },
+          modelVersion: "gemini-4-hydrogen-low",
+        },
+      })}\n\n`;
+      const response = new Response(ssePayload, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+
+      const result = await probeStreamingResponseForEmpty(response);
+      expect(result.empty).toBe(true);
+    });
+
+    it("detects empty text parts + synthetic/bare STOP without output as empty", async () => {
+      const ssePayload = `data: ${JSON.stringify({
+        response: {
+          candidates: [{ content: { role: "model", parts: [{ text: "" }] }, finishReason: "STOP" }],
+          usageMetadata: { promptTokenCount: 100, totalTokenCount: 100 },
+        },
+      })}\n\n`;
+      const response = new Response(ssePayload, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+
+      const result = await probeStreamingResponseForEmpty(response);
+      expect(result.empty).toBe(true);
+    });
+
+    it("resolves non-empty immediately on first meaningful chunk and replays buffered prefix in real time", async () => {
+      const encoder = new TextEncoder();
+      let enqueueSecond!: () => void;
+      let closeStream!: () => void;
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ response: { usageMetadata: { promptTokenCount: 100 } } })}\n\n`),
+          );
+          enqueueSecond = () => {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ response: { candidates: [{ content: { role: "model", parts: [{ text: "hello" }] } }] } })}\n\n`),
+            );
+          };
+          closeStream = () => {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ response: { candidates: [{ content: { role: "model", parts: [{ text: " world" }] }, finishReason: "STOP" }] } })}\n\n`),
+            );
+            controller.close();
+          };
+        },
+      });
+
+      const response = new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+
+      const probePromise = probeStreamingResponseForEmpty(response);
+      // Emit meaningful chunk BEFORE closing stream — probe must resolve without waiting for EOF.
+      await new Promise((r) => setTimeout(r, 10));
+      enqueueSecond();
+      const probed = await probePromise;
+      expect(probed.empty).toBe(false);
+
+      // Now close stream with trailing chunk and verify full byte-for-byte replay.
+      closeStream();
+      const fullText = await probed.response.text();
+      expect(fullText).toContain('"promptTokenCount":100');
+      expect(fullText).toContain('"text":"hello"');
+      expect(fullText).toContain('"text":" world"');
+    });
+
+    it("passes through upstream mid-stream error events and SAFETY finish reasons as non-empty", async () => {
+      const errorRes = new Response(`data: ${JSON.stringify({ error: { code: 500, message: "boom" } })}\n\n`, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+      expect((await probeStreamingResponseForEmpty(errorRes)).empty).toBe(false);
+
+      const safetyRes = new Response(
+        `data: ${JSON.stringify({ response: { candidates: [{ finishReason: "SAFETY" }] } })}\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+      expect((await probeStreamingResponseForEmpty(safetyRes)).empty).toBe(false);
     });
   });
 });

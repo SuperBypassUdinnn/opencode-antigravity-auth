@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { OPENCODE_MODEL_DEFINITIONS } from "./models";
+import {
+  ACTIVE_MANAGED_MODELS,
+  OPENCODE_MODEL_DEFINITIONS,
+  SUNSET_DISCOVERED_MODELS,
+  SUNSET_MANAGED_MODELS,
+  buildModelRegistryViews,
+  isRetiredModelId,
+  resolveModelFamilyForRouting,
+  resolveQuotaGroupForModel,
+  resolveQuotaGroupForSummary,
+} from "./models";
 
 const getModel = (name: string) => {
   const model = OPENCODE_MODEL_DEFINITIONS[name];
@@ -25,6 +35,7 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       "antigravity-gemini-3.1-pro",
       "antigravity-gemini-3.8-flash",
       "antigravity-gemini-4-argon",
+      "antigravity-gemini-4-carbon",
       "antigravity-gemini-4-hydrogen",
       "antigravity-gemini-4-neon",
       "gemini-2.5-flash",
@@ -53,6 +64,15 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       medium: { thinkingLevel: "medium" },
       high: { thinkingLevel: "high" },
     });
+  });
+
+  it("defines the Gemini 4 Carbon tier set (low, medium, high)", () => {
+    expect(getModel("antigravity-gemini-4-carbon").variants).toEqual({
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+    });
+    expect(getModel("antigravity-gemini-4-carbon").proTier).toBe(true);
   });
 
   it("defines the full Gemini 4 Hydrogen tier set, including xhigh", () => {
@@ -92,5 +112,67 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       medium: { thinkingLevel: "medium" },
       high: { thinkingLevel: "high" },
     });
+  });
+
+  it("removes retired sunset models from every derived registry view", () => {
+    const retiredSunset = Object.fromEntries(
+      Object.entries(SUNSET_MANAGED_MODELS).map(([id, entry]) => [
+        id,
+        entry.sunset ? { ...entry, sunset: { ...entry.sunset, retired: true } } : entry,
+      ]),
+    );
+    const retiredDiscovered = SUNSET_DISCOVERED_MODELS.map((entry) =>
+      entry.sunset ? { ...entry, sunset: { ...entry.sunset, retired: true } } : entry,
+    );
+
+    const views = buildModelRegistryViews(
+      { ...ACTIVE_MANAGED_MODELS, ...retiredSunset },
+      retiredDiscovered,
+    );
+
+    expect(views.definitions["antigravity-gemini-4-argon"]).toBeUndefined();
+    expect(views.definitions["antigravity-gemini-3.8-flash"]).toBeUndefined();
+    expect(views.definitions["antigravity-claude-sonnet-4-6"]).toBeUndefined();
+    expect(views.definitions["antigravity-claude-opus-4-6-thinking"]).toBeUndefined();
+    expect(views.definitions["antigravity-gemini-4-carbon"]).toBeDefined();
+    expect(views.v2FallbackIds).not.toContain("antigravity-gemini-4-argon");
+    expect(views.v2FallbackIds).toContain("antigravity-gemini-4-carbon");
+    expect(views.proTierBases.has("gemini-4-argon")).toBe(false);
+    expect(views.proTierBases.has("gemini-4-carbon")).toBe(true);
+    expect(views.advertisedTierSuffixIds).not.toContain("gpt-oss-120b-medium");
+    expect(views.advertisedTierSuffixIds).not.toContain("gemini-3.8-flash-high");
+    expect(views.advertisedTierSuffixIds).toContain("gemini-4-carbon-high");
+    expect(views.tierSuffixFamilies.some(([base]) => base === "gemini-4-argon")).toBe(false);
+    expect(views.tierSuffixFamilies.some(([base]) => base === "gemini-4-carbon")).toBe(true);
+    expect(views.aliases["gemini-claude-sonnet-4-6"]).toBeUndefined();
+    expect(views.nonThinkingClaudeFallbackIds.has("claude-sonnet-4-6")).toBe(false);
+    expect(isRetiredModelId("antigravity-gemini-4-argon-high", views.retiredBases)).toBe(true);
+    expect(isRetiredModelId("gpt-oss-120b-medium", views.retiredBases)).toBe(true);
+    expect(isRetiredModelId("gemini-4-carbon-high", views.retiredBases)).toBe(false);
+  });
+
+  it("supports declarative per-model quota bucket overrides and summary display matching", () => {
+    expect(resolveQuotaGroupForModel("gpt-oss-120b-medium")).toBe("claude");
+    expect(resolveQuotaGroupForModel("antigravity-gemini-4-carbon-high")).toBe("gemini");
+    expect(resolveQuotaGroupForModel("claude-sonnet-5-5-high")).toBe("claude");
+    expect(resolveQuotaGroupForModel("unknown-internal-probe")).toBeNull();
+
+    expect(resolveQuotaGroupForSummary("Gemini Models")).toBe("gemini");
+    expect(resolveQuotaGroupForSummary("Claude and GPT models")).toBe("claude");
+    expect(resolveQuotaGroupForSummary("Other")).toBeUndefined();
+
+    // Moving a model between buckets only requires updating its registry `quotaGroup`.
+    const customViews = buildModelRegistryViews(
+      {
+        ...ACTIVE_MANAGED_MODELS,
+        "antigravity-gemini-4-neon": {
+          ...ACTIVE_MANAGED_MODELS["antigravity-gemini-4-neon"]!,
+          quotaGroup: "claude",
+        },
+      },
+      SUNSET_DISCOVERED_MODELS,
+    );
+    expect(resolveQuotaGroupForModel("gemini-4-neon-high", undefined, customViews.quotaGroupsByBase)).toBe("claude");
+    expect(resolveModelFamilyForRouting("antigravity-gemini-4-neon", customViews.quotaGroupsByBase)).toBe("claude");
   });
 });

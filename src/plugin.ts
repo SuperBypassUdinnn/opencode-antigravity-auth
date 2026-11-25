@@ -32,12 +32,14 @@ import {
   prepareAntigravityRequest,
   transformAntigravityResponse,
 } from "./plugin/request";
-import { resolveModelWithTier } from "./plugin/transform/model-resolver";
+import { getModelFamily, resolveModelWithTier } from "./plugin/transform/model-resolver";
+import { QUOTA_BUCKET_REGISTRY } from "./plugin/config/models";
 import {
   isEmptyResponseBody,
   createSyntheticGeminiErrorResponse,
 } from "./plugin/request-helpers";
 import { EmptyResponseError } from "./plugin/errors";
+import { probeStreamingResponseForEmpty } from "./plugin/core/streaming";
 import { fetchWithStallGuard, isStalledError, stallBodyIdleMs } from "./plugin/stall-guard";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
@@ -1110,9 +1112,6 @@ interface RateLimitState {
 // Key format: `${accountIndex}:${quotaKey}` for per-account-per-quota tracking
 const rateLimitStateByAccountQuota = new Map<string, RateLimitState>();
 
-// Track empty response retry attempts (ported from LLM-API-Key-Proxy)
-const emptyResponseAttempts = new Map<string, number>();
-
 /**
  * Get rate limit backoff with time-window deduplication.
  * 
@@ -1960,6 +1959,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // of cycling the pool for minutes (2026-11-15 incident: 212 requests).
           let bareCapacity429Count = 0;
           const MAX_BARE_CAPACITY_429S = requestBare429Limit();
+          // Counts consecutive empty responses (both non-streaming JSON and
+          // SSE streams that close with 0 meaningful output tokens) for this
+          // request so concurrent requests in the same session do not collide.
+          let emptyResponseCount = 0;
           // Counts every upstream attempt across all accounts so the pool can
           // never be cycled without limit (see createAttemptBudget).
           const attemptBudget = createAttemptBudget();
@@ -2987,46 +2990,52 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   }
                 }
                 
-                // Empty response retry logic (ported from LLM-API-Key-Proxy)
-                // For non-streaming responses, check if the response body is empty
-                // and retry if so (up to config.empty_response_max_attempts times)
-                if (response.ok && !prepared.streaming) {
+                // Empty response retry logic (ported from LLM-API-Key-Proxy, extended
+                // to SSE streams so upstream HTTP 200 streams that close with 0
+                // meaningful content tokens are retried instead of synthesizing STOP).
+                if (response.ok) {
                   const maxAttempts = config.empty_response_max_attempts ?? 4;
                   const retryDelayMs = config.empty_response_retry_delay_ms ?? 2000;
-                  
-                  // Clone to check body without consuming original
-                  const clonedForCheck = response.clone();
-                  const bodyText = await clonedForCheck.text();
-                  
-                  if (isEmptyResponseBody(bodyText)) {
-                    // Track empty response attempts per request
-                    const emptyAttemptKey = `${prepared.sessionId ?? "none"}:${prepared.effectiveModel ?? "unknown"}`;
-                    const currentAttempts = (emptyResponseAttempts.get(emptyAttemptKey) ?? 0) + 1;
-                    emptyResponseAttempts.set(emptyAttemptKey, currentAttempts);
-                    
-                    pushDebug(`empty-response: attempt ${currentAttempts}/${maxAttempts}`);
-                    
-                    if (currentAttempts < maxAttempts) {
+                  const contentType = response.headers.get("content-type") ?? "";
+                  const isEventStreamResponse = contentType.includes("text/event-stream");
+
+                  let isEmpty = false;
+                  if (prepared.streaming && isEventStreamResponse && response.body) {
+                    const probed = await probeStreamingResponseForEmpty(response);
+                    response = probed.response;
+                    isEmpty = probed.empty;
+                  } else if (!prepared.streaming || contentType.includes("application/json")) {
+                    const clonedForCheck = response.clone();
+                    const bodyText = await clonedForCheck.text();
+                    isEmpty = isEmptyResponseBody(bodyText);
+                  }
+
+                  if (isEmpty) {
+                    emptyResponseCount += 1;
+                    pushDebug(
+                      `empty-response${prepared.streaming ? " (streaming)" : ""}: attempt ${emptyResponseCount}/${maxAttempts}`,
+                    );
+
+                    if (emptyResponseCount < maxAttempts) {
+                      if (tokenConsumed) {
+                        getTokenTracker().refund(account.index);
+                        tokenConsumed = false;
+                      }
                       await showToast(
-                        `Empty response received. Retrying (${currentAttempts}/${maxAttempts})...`,
+                        `Empty response received. Retrying (${emptyResponseCount}/${maxAttempts})...`,
                         "warning"
                       );
                       await sleepWithinBudget(silentWaitBudget, retryDelayMs, "empty response retry", pushDebug, abortSignal);
-                      continue; // Retry the endpoint loop
+                      i -= 1; // Retry the same endpoint
+                      continue;
                     }
-                    
-                    // Clean up and throw after max attempts
-                    emptyResponseAttempts.delete(emptyAttemptKey);
+
                     throw new EmptyResponseError(
                       "antigravity",
                       prepared.effectiveModel ?? "unknown",
-                      currentAttempts,
+                      emptyResponseCount,
                     );
                   }
-                  
-                  // Clean up successful attempt tracking
-                  const emptyAttemptKeyClean = `${prepared.sessionId ?? "none"}:${prepared.effectiveModel ?? "unknown"}`;
-                  emptyResponseAttempts.delete(emptyAttemptKeyClean);
                 }
                 
                 // A non-quota 403 on the last endpoint used to fall through and
@@ -3085,7 +3094,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 // below: 2026-11-15 showed the bare-429 cap throwing at 25 and
                 // the catch rotating on anyway, so the request ran to attempt
                 // 121 before the attempt budget stopped it.
-                if (error instanceof TerminalRequestError) {
+                if (error instanceof TerminalRequestError || error instanceof EmptyResponseError) {
                   throw error;
                 }
 
@@ -3474,22 +3483,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     } else {
                       const groups = res.quota!.groups;
                       const isProAccount = isProQuotaGroup(groups);
-                      const weeklyResetTime = groups["gemini-argon"]?.resetTime || undefined;
 
-                      const groupEntries = [
-                        { name: "Claude", groupKey: "claude", data: groups.claude },
-                        { name: "Gemini 3 Flash", groupKey: "gemini-flash", data: groups["gemini-flash"] },
-                        { name: "Gemini 4 Argon", groupKey: "gemini-argon", data: groups["gemini-argon"] },
-                      ].filter(g => g.data);
+                      const groupEntries = QUOTA_BUCKET_REGISTRY
+                        .map(bucket => ({
+                          name: bucket.label,
+                          groupKey: bucket.id,
+                          twoTierOnPro: bucket.twoTierOnPro,
+                          data: groups[bucket.id],
+                        }))
+                        .filter(g => g.data);
                       
                       groupEntries.forEach((g, idx) => {
                         const isLast = idx === groupEntries.length - 1;
                         const connector = isLast ? "└─" : "├─";
                         const bar = createProgressBar(g.data!.remainingFraction);
                         let reset: string;
-                        if (isProAccount && (g.groupKey === "claude" || g.groupKey === "gemini-flash")) {
+                        if (isProAccount && g.twoTierOnPro) {
                           const wFraction = g.data!.weeklyRemainingFraction;
-                          const wReset = g.data!.weeklyResetTime || weeklyResetTime;
+                          const wReset = g.data!.weeklyResetTime;
                           const shortStamp = formatResetStamp(g.data!.resetTime);
                           const weeklyStamp = formatResetStamp(wReset);
                           const wPct = wFraction !== undefined ? ` ${Math.round(wFraction * 100)}%` : " unknown";
@@ -4202,10 +4213,7 @@ function extractModelFromUrlWithSuffix(urlString: string): string | null {
 
 function getModelFamilyFromUrl(urlString: string): ModelFamily {
   const model = extractModelFromUrl(urlString);
-  let family: ModelFamily = "gemini";
-  if (model && model.includes("claude")) {
-    family = "claude";
-  }
+  const family: ModelFamily = model ? getModelFamily(model) : "gemini";
   if (isDebugEnabled()) {
     logModelFamily(urlString, model, family);
   }

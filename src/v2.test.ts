@@ -1660,7 +1660,7 @@ describe("managed storage rate limit reconciliation", () => {
         ...pool().accounts[0]!,
         id: "stable-first",
         rateLimitResetTimes: { [markerKey]: reset },
-        cachedQuota: { "gemini-flash": { remainingFraction: 1, modelCount: 1, models: { "gemini-3.8-flash-high": { remainingFraction: 1 } } } },
+        cachedQuota: { gemini: { remainingFraction: 1, modelCount: 1, models: { "gemini-3.8-flash-high": { remainingFraction: 1 } } } },
         cachedQuotaUpdatedAt: Date.now(),
       }],
       activeIndex: 0,
@@ -1948,11 +1948,12 @@ describe("free account first", () => {
     const pro = state.storage!.accounts[0]!
     pro.email = "pro@example.test"
     pro.cachedQuota = {
-      "gemini-argon": {
+      gemini: {
         remainingFraction: 1,
         weeklyRemainingFraction: 1,
         weeklyResetTime: new Date(Date.now() + 6 * 86_400_000).toISOString(),
         modelCount: 1,
+        models: { "gemini-4-carbon-high": { remainingFraction: 1 } },
       },
     }
     pro.cachedQuotaUpdatedAt = Date.now()
@@ -1961,7 +1962,7 @@ describe("free account first", () => {
       email: "free@example.test",
       refreshToken: "free",
       // No weekly bucket: Google has not started this window yet.
-      cachedQuota: { "gemini-flash": { remainingFraction: 1, modelCount: 1 } },
+      cachedQuota: { gemini: { remainingFraction: 1, modelCount: 1 } },
       cachedQuotaUpdatedAt: Date.now(),
     }
     state.storage!.accounts.push(free)
@@ -1998,5 +1999,65 @@ describe("free account first", () => {
 
     await stream(sdk, "antigravity-gemini-3.8-flash-high")
     expect(tokenBodies(network)[0]).toContain("refresh_token=refresh")
+  })
+})
+
+describe("streaming empty response retry", () => {
+  it("retries when SSE stream ends with usageMetadata-only and succeeds on a later attempt", async () => {
+    state.configOverrides = { empty_response_max_attempts: 3, empty_response_retry_delay_ms: 500 }
+    let streamCalls = 0
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "refreshed-access", expires_in: 3600 })
+      }
+      streamCalls += 1
+      if (streamCalls <= 2) {
+        return new Response(
+          `data: ${JSON.stringify({ response: { usageMetadata: { promptTokenCount: 478552, totalTokenCount: 478552 } } })}\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      }
+      return new Response(
+        `data: ${JSON.stringify({ response: { candidates: [{ index: 0, content: { role: "model", parts: [{ text: "recovered" }] }, finishReason: "STOP" }] } })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+    })
+
+    const adapter = await host({ connection: false })
+    const { sdk } = await adapter.sdk()
+    const parts = await stream(sdk)
+    const text = parts
+      .filter((p): p is Extract<typeof p, { type: "text-delta" }> => p.type === "text-delta")
+      .map(p => p.delta)
+      .join("")
+    expect(streamCalls).toBe(3)
+    expect(text).toContain("recovered")
+  })
+
+  it("throws EmptyResponseError after exhausting streaming retries instead of rotating all accounts", async () => {
+    state.configOverrides = { empty_response_max_attempts: 3, empty_response_retry_delay_ms: 500 }
+    state.storage!.accounts.push({
+      ...pool().accounts[0]!,
+      email: "second@example.test",
+      refreshToken: "second",
+    })
+    let streamCalls = 0
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return Response.json({ access_token: "refreshed-access", expires_in: 3600 })
+      }
+      streamCalls += 1
+      return new Response(
+        `data: ${JSON.stringify({ response: { usageMetadata: { promptTokenCount: 478552, totalTokenCount: 478552 } } })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+    })
+
+    const adapter = await host({ connection: false })
+    const { sdk } = await adapter.sdk()
+    await expect(stream(sdk)).rejects.toThrow(/returned an empty response after 3 attempts/i)
+    expect(streamCalls).toBe(3)
   })
 })

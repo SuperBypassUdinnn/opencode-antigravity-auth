@@ -1859,7 +1859,7 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       manager.updateQuotaCache(0, {
-        "gemini-flash": {
+        gemini: {
           remainingFraction: 1,
           modelCount: 1,
           models: { "gemini-3.8-flash-high": { remainingFraction: 1 } },
@@ -1889,7 +1889,7 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       manager.updateQuotaCache(0, {
-        "gemini-flash": { remainingFraction: 0, modelCount: 1 },
+        gemini: { remainingFraction: 0, modelCount: 1 },
       });
 
       expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({
@@ -1918,7 +1918,7 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       manager.updateQuotaCache(0, {
-        "gemini-flash": {
+        gemini: {
           remainingFraction: 1,
           modelCount: 1,
           models: {
@@ -1972,7 +1972,7 @@ describe("AccountManager", () => {
       };
 
       const manager = new AccountManager(undefined, stored);
-      manager.updateQuotaCache(0, { "gemini-flash": { remainingFraction: 1, modelCount: 1 } });
+      manager.updateQuotaCache(0, { gemini: { remainingFraction: 1, modelCount: 1 } });
 
       expect(manager.getAccounts()[0]!.rateLimitResetTimes.claude).toBe(10_000_000);
     });
@@ -1988,7 +1988,7 @@ describe("AccountManager", () => {
             lastUsed: 0,
             rateLimitResetTimes: { "gemini-antigravity:gemini-3.8-flash-high": 10_000_000 },
             cachedQuota: {
-              "gemini-flash": {
+              gemini: {
                 remainingFraction: 1,
                 modelCount: 1,
                 models: { "gemini-3.8-flash-high": { remainingFraction: 1 } },
@@ -2005,7 +2005,7 @@ describe("AccountManager", () => {
       expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
     });
 
-    it("clears an argon marker when the argon bucket has quota", () => {
+    it("clears an argon marker when the unified gemini bucket has quota", () => {
       const stored: AccountStorageV4 = {
         version: 4,
         accounts: [
@@ -2016,7 +2016,7 @@ describe("AccountManager", () => {
             lastUsed: 0,
             rateLimitResetTimes: { "gemini-antigravity:gemini-4-argon-high": 10_000_000 },
             cachedQuota: {
-              "gemini-argon": {
+              gemini: {
                 remainingFraction: 1,
                 modelCount: 1,
                 models: { "gemini-4-argon-high": { remainingFraction: 1 } },
@@ -2033,7 +2033,7 @@ describe("AccountManager", () => {
       expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
     });
 
-    it("does not let the argon bucket vouch for shared Gemini markers", () => {
+    it("clears unified Gemini markers across models when unified gemini quota is available", () => {
       const stored: AccountStorageV4 = {
         version: 4,
         accounts: [
@@ -2047,10 +2047,13 @@ describe("AccountManager", () => {
               "gemini-antigravity": 10_000_000,
             },
             cachedQuota: {
-              "gemini-argon": {
+              gemini: {
                 remainingFraction: 1,
-                modelCount: 1,
-                models: { "gemini-4-argon-high": { remainingFraction: 1 } },
+                modelCount: 2,
+                models: {
+                  "gemini-4-argon-high": { remainingFraction: 1 },
+                  "gemini-3.8-flash-high": { remainingFraction: 1 },
+                },
               },
             },
             cachedQuotaUpdatedAt: Date.now(),
@@ -2061,10 +2064,7 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
 
-      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({
-        "gemini-antigravity:gemini-3.8-flash-high": 10_000_000,
-        "gemini-antigravity": 10_000_000,
-      });
+      expect(manager.getAccounts()[0]!.rateLimitResetTimes).toEqual({});
     });
   });
 
@@ -2266,17 +2266,15 @@ describe("license bench (SUBSCRIPTION_REQUIRED)", () => {
 describe("resolveQuotaGroup", () => {
   it("returns model-based quota group when model is provided", () => {
     expect(resolveQuotaGroup("claude", "claude-opus-4-6-thinking")).toBe("claude");
-    expect(resolveQuotaGroup("gemini", "gemini-2.5-pro")).toBe("gemini-flash");
-    expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
-    expect(resolveQuotaGroup("gemini", "gemini-4-hydrogen-high")).toBe("gemini-flash");
-    // Gemini 4 Argon and Orchestrator planner draw from their own weekly-only bucket,
-    // while the Orchestrator flash worker shares the 5h gemini-flash pool.
-    expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini-argon");
-    expect(resolveQuotaGroup("gemini", "antigravity-gemini-4-argon")).toBe("gemini-argon");
-    expect(resolveQuotaGroup("gemini", "gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
-    expect(resolveQuotaGroup("gemini", "antigravity-gemini-pro-orchestrator-g1-pro")).toBe("gemini-argon");
-    expect(resolveQuotaGroup("gemini", "gemini-flash-worker-agy")).toBe("gemini-flash");
-    // Claude keeps its own branch even if the id mentions argon or orchestrator.
+    expect(resolveQuotaGroup("gemini", "gemini-2.5-pro")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-4-hydrogen-high")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-4-carbon-high")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "antigravity-gemini-4-argon")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-pro-orchestrator-g1-pro")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "antigravity-gemini-pro-orchestrator-g1-pro")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-flash-worker-agy")).toBe("gemini");
     expect(resolveQuotaGroup("claude", "claude-argon-x")).toBe("claude");
   });
 
@@ -2285,15 +2283,14 @@ describe("resolveQuotaGroup", () => {
     expect(resolveQuotaGroup("claude", undefined)).toBe("claude");
   });
 
-  it("falls back to gemini-flash for gemini family when no model", () => {
-    expect(resolveQuotaGroup("gemini", null)).toBe("gemini-flash");
-    expect(resolveQuotaGroup("gemini", undefined)).toBe("gemini-flash");
+  it("falls back to gemini for gemini family when no model", () => {
+    expect(resolveQuotaGroup("gemini", null)).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", undefined)).toBe("gemini");
   });
 
   it("model takes precedence over family", () => {
-    // Even if family says claude, model determines the quota group
-    expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini-flash");
-    expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini-argon");
+    expect(resolveQuotaGroup("gemini", "gemini-2.5-flash")).toBe("gemini");
+    expect(resolveQuotaGroup("gemini", "gemini-4-argon-high")).toBe("gemini");
   });
 });
 

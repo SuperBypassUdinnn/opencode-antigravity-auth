@@ -1,4 +1,15 @@
-import { OPENCODE_MODEL_DEFINITIONS, XHIGH_TIER_BUDGET, type ModelModalities, type ModelThinkingLevel, type OpencodeModelDefinition } from "./models.ts"
+import {
+  OPENCODE_MODEL_DEFINITIONS,
+  PRO_TIER_MODEL_BASES,
+  RETIRED_MODEL_IDS,
+  V2_FALLBACK_MODEL_IDS,
+  XHIGH_TIER_BUDGET,
+  isProTierModelId,
+  isRetiredModelId,
+  type ModelModalities,
+  type ModelThinkingLevel,
+  type OpencodeModelDefinition,
+} from "./models.ts"
 import type { AvailableModel } from "../quota.ts"
 import { registerAdvertisedModelIds, registerCatalogThinkingModelIds, registerTierSuffixModelBases } from "../transform/model-resolver.ts"
 import { z } from "zod"
@@ -15,36 +26,28 @@ export const ModelCatalogCacheSchema = z.object({
 
 // Used before login or when discovery is unavailable. Once connected, Google's
 // catalog replaces this list, including model IDs, names and token limits.
+// Derived from the central model registry in models.ts so retiring a model
+// there automatically removes it from the V2 fallback catalog.
 const fallbackModels: Record<string, OpencodeModelDefinition> = Object.fromEntries(
-  ["antigravity-gemini-3-flash", "antigravity-gemini-3.8-flash", "antigravity-claude-sonnet-4-6", "antigravity-claude-opus-4-6-thinking", "antigravity-gemini-4-argon", "antigravity-gemini-4-hydrogen", "antigravity-gemini-4-neon", "antigravity-claude-sonnet-5-5", "antigravity-claude-opus-5-5", "antigravity-claude-opus-5-5-thinking"]
+  V2_FALLBACK_MODEL_IDS
     .flatMap(id => OPENCODE_MODEL_DEFINITIONS[id] ? [[id, OPENCODE_MODEL_DEFINITIONS[id]]] : []),
 )
 
 /** Model bases that must wait for the per-account discovery catalog before they
  * can be used. Before discovery the account pool is unknown, so common fallback
  * models may use any account while pro-tier models wait for the catalog, and a
- * free account never receives them. Derived dynamically from OPENCODE_MODEL_DEFINITIONS. */
-export const PRE_DISCOVERY_GATED_MODEL_BASES: ReadonlySet<string> = new Set(
-  Object.entries(OPENCODE_MODEL_DEFINITIONS)
-    .filter(([_, def]) => def.proTier === true)
-    .map(([id]) => id.replace(/^antigravity-/i, "").replace(/-thinking$/i, "").toLowerCase()),
-)
+ * free account never receives them. Derived dynamically from models.ts. */
+export const PRE_DISCOVERY_GATED_MODEL_BASES: ReadonlySet<string> = PRO_TIER_MODEL_BASES
 
 /**
  * Strips a leading `antigravity-` prefix (case-insensitive), a trailing
  * `-(minimal|low|medium|high|xhigh)` tier suffix, and an optional `-thinking`
  * decoration, lowercases, then checks membership in
- * `PRE_DISCOVERY_GATED_MODEL_BASES`. The `-thinking` strip is needed because
- * Google's backend ids for thinking models mix both shapes
- * (claude-opus-5-5-high vs claude-opus-4-6-thinking-high). This gate only
- * applies before the per-account discovery catalog is loaded.
+ * `PRE_DISCOVERY_GATED_MODEL_BASES`. This gate only applies before the
+ * per-account discovery catalog is loaded.
  */
 export function isPreDiscoveryGatedModel(catalogKey: string): boolean {
-  const key = catalogKey
-    .replace(/^antigravity-/i, "")
-    .replace(/-(minimal|low|medium|high|xhigh)$/i, "")
-    .replace(/-thinking$/i, "")
-  return PRE_DISCOVERY_GATED_MODEL_BASES.has(key.toLowerCase())
+  return isProTierModelId(catalogKey, PRE_DISCOVERY_GATED_MODEL_BASES)
 }
 
 function definition(model: OpencodeModelDefinition) {
@@ -84,9 +87,10 @@ const TIER_LABEL = /\s*\((?:minimal|low|medium|high|xhigh)\)\s*$/i
 
 /** Excludes completion/internal, image-generation, tier routers (bare "-tiered"
  * and its per-tier "-tiered-<tier>" duplicates), Orchestrator planner/worker
- * models, deprecated models, and disabled entries. */
-function isChatModel(id: string, model: AvailableModel): boolean {
+ * models, retired/deprecated models, and disabled entries. */
+function isChatModel(id: string, model: AvailableModel, retiredBases: ReadonlySet<string> = RETIRED_MODEL_IDS): boolean {
   return /^(gemini-|claude-|gpt-oss-)/.test(id)
+    && !isRetiredModelId(id, retiredBases)
     && !/image|imagen|-(disabled|tiered)(?:-(?:minimal|low|medium|high|xhigh))?$/.test(id)
     && id !== "gemini-3.5-flash-lite"
     && !/orchestrator/i.test(id)
@@ -112,12 +116,15 @@ function tierOf(id: string): { base: string; tier: CatalogTier } | undefined {
  * variants; the catalog's own "-tiered-<tier>" duplicates are filtered out by
  * `isChatModel` instead of becoming separate models.
  */
-function collapsibleFamilies(models: Record<string, AvailableModel>): Map<string, CatalogTier[]> {
+function collapsibleFamilies(
+  models: Record<string, AvailableModel>,
+  retiredBases: ReadonlySet<string> = RETIRED_MODEL_IDS,
+): Map<string, CatalogTier[]> {
   const tiers = new Map<string, Set<CatalogTier>>()
   for (const [id, model] of Object.entries(models)) {
     const parsed = tierOf(id)
     // A published base ID means the catalog has a real model by that name.
-    if (!parsed || !isChatModel(id, model) || models[parsed.base]) continue
+    if (!parsed || !isChatModel(id, model, retiredBases) || models[parsed.base]) continue
     let found = tiers.get(parsed.base)
     if (!found) {
       found = new Set<CatalogTier>()
@@ -131,11 +138,14 @@ function collapsibleFamilies(models: Record<string, AvailableModel>): Map<string
 }
 
 /** Maps every published catalog ID to the model ID this plugin exposes for it. */
-export function modelKeyMap(models: Record<string, AvailableModel>): Map<string, string> {
-  const families = collapsibleFamilies(models)
+export function modelKeyMap(
+  models: Record<string, AvailableModel>,
+  retiredBases: ReadonlySet<string> = RETIRED_MODEL_IDS,
+): Map<string, string> {
+  const families = collapsibleFamilies(models, retiredBases)
   const keys = new Map<string, string>()
   for (const [id, model] of Object.entries(models)) {
-    if (!isChatModel(id, model)) continue
+    if (!isChatModel(id, model, retiredBases)) continue
     const parsed = tierOf(id)
     keys.set(id, `antigravity-${parsed && families.has(parsed.base) ? parsed.base : id}`)
   }
@@ -153,13 +163,17 @@ function modalitiesOf(model: AvailableModel | undefined): ModelModalities {
   return { input: model?.supportsImages === false ? ["text"] : ["text", "image", "pdf"], output: ["text"] }
 }
 
-export function buildAccountModelDefinitions(models: Record<string, AvailableModel>): V2ModelDefinitions {
+export function buildAccountModelDefinitions(
+  models: Record<string, AvailableModel>,
+  options: { retiredBases?: ReadonlySet<string> } = {},
+): V2ModelDefinitions {
+  const retiredBases = options.retiredBases ?? RETIRED_MODEL_IDS
   const definitions: V2ModelDefinitions = {}
-  const families = collapsibleFamilies(models)
+  const families = collapsibleFamilies(models, retiredBases)
   const collapsed = new Set([...families].flatMap(([base, tiers]) => tiers.map(tier => `${base}-${tier}`)))
 
   for (const [id, model] of Object.entries(models)) {
-    if (!isChatModel(id, model) || collapsed.has(id)) continue
+    if (!isChatModel(id, model, retiredBases) || collapsed.has(id)) continue
     const key = `antigravity-${id}`
     const known = OPENCODE_MODEL_DEFINITIONS[key]
     definitions[key] = definition({
