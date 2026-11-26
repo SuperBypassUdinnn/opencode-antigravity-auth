@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACTIVE_MANAGED_MODELS,
+  FREE_TIER_MODEL_BASES,
   OPENCODE_MODEL_DEFINITIONS,
+  PRO_TIER_MODEL_BASES,
   SUNSET_DISCOVERED_MODELS,
   SUNSET_MANAGED_MODELS,
   buildModelRegistryViews,
+  isFreeTierModelId,
+  isProTierModelId,
   isRetiredModelId,
   resolveModelFamilyForRouting,
   resolveQuotaGroupForModel,
@@ -33,7 +37,6 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
       "antigravity-gemini-3-flash",
       "antigravity-gemini-3-pro",
       "antigravity-gemini-3.1-pro",
-      "antigravity-gemini-3.8-flash",
       "antigravity-gemini-4-argon",
       "antigravity-gemini-4-carbon",
       "antigravity-gemini-4-hydrogen",
@@ -174,5 +177,18 @@ describe("OPENCODE_MODEL_DEFINITIONS", () => {
     );
     expect(resolveQuotaGroupForModel("gemini-4-neon-high", undefined, customViews.quotaGroupsByBase)).toBe("claude");
     expect(resolveModelFamilyForRouting("antigravity-gemini-4-neon", customViews.quotaGroupsByBase)).toBe("claude");
+  });
+
+  it("marks Hydrogen as free-tier and keeps Carbon/Neon/Argon as pro-tier", () => {
+    expect(FREE_TIER_MODEL_BASES.has("gemini-4-hydrogen")).toBe(true);
+    expect(isFreeTierModelId("antigravity-gemini-4-hydrogen")).toBe(true);
+    expect(isFreeTierModelId("gemini-4-hydrogen-high")).toBe(true);
+    expect(isFreeTierModelId("gemini-4-carbon-high")).toBe(false);
+
+    expect(PRO_TIER_MODEL_BASES.has("gemini-4-hydrogen")).toBe(false);
+    expect(isProTierModelId("gemini-4-hydrogen-high")).toBe(false);
+    expect(isProTierModelId("gemini-4-carbon-high")).toBe(true);
+    expect(isRetiredModelId("gemini-3.8-flash")).toBe(true);
+    expect(isRetiredModelId("gemini-3.8-flash-high")).toBe(true);
   });
 });

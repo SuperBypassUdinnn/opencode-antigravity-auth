@@ -716,7 +716,7 @@ it("removes x-api-key header", () => {
       "claude-opus-5-5-high",
       "claude-sonnet-5-5-high",
       "gemini-4-argon-high",
-      "gemini-3.8-flash-high",
+      "gemini-4-hydrogen-high",
       "gpt-oss-120b-medium",
     ])("sends advertised model ID %s unchanged to Antigravity", (modelId) => {
       const result = prepareAntigravityRequest(
@@ -731,9 +731,9 @@ it("removes x-api-key header", () => {
       expect(JSON.parse(result.init.body as string).model).toBe(modelId);
     });
 
-    it("maps a collapsed Flash model's selected variant to the backend tier ID", () => {
+    it("maps a collapsed Hydrogen model's selected variant to the backend tier ID", () => {
       const result = prepareAntigravityRequest(
-        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.8-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-4-hydrogen:generateContent",
         {
           method: "POST",
           body: JSON.stringify({
@@ -746,8 +746,8 @@ it("removes x-api-key header", () => {
         undefined,
         "antigravity"
       );
-      expect(result.effectiveModel).toBe("gemini-3.8-flash-high");
-      expect(JSON.parse(result.init.body as string).model).toBe("gemini-3.8-flash-high");
+      expect(result.effectiveModel).toBe("gemini-4-hydrogen-high");
+      expect(JSON.parse(result.init.body as string).model).toBe("gemini-4-hydrogen-high");
     });
 
     it.each([
@@ -781,16 +781,16 @@ it("removes x-api-key header", () => {
       });
     });
 
-    it("defaults a collapsed Flash model without a variant to the low tier ID", () => {
+    it("defaults a collapsed Hydrogen model without a variant to the low tier ID", () => {
       const result = prepareAntigravityRequest(
-        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.8-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-4-hydrogen:generateContent",
         { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
         mockAccessToken,
         mockProjectId,
         undefined,
         "antigravity"
       );
-      expect(result.effectiveModel).toBe("gemini-3.8-flash-low");
+      expect(result.effectiveModel).toBe("gemini-4-hydrogen-low");
     });
 
     it("leaves the gemini-cli header style free of tiered catalog rewrites", () => {

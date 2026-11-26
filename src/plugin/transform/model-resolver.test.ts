@@ -263,7 +263,7 @@ describe("resolveModelWithVariant", () => {
       expect(neon.actualModel).toBe("gemini-4-neon");
       expect(neon.thinkingLevel).toBe("xhigh");
 
-      const flash = resolveModelWithVariant("antigravity-gemini-3.8-flash", {
+      const flash = resolveModelWithVariant("antigravity-gemini-4-carbon", {
         thinkingBudget: XHIGH_TIER_BUDGET,
       });
       expect(flash.thinkingLevel).toBe("low");
@@ -366,12 +366,12 @@ describe("advertised tier-suffix model IDs", () => {
     "claude-sonnet-5-5-high",
     "gemini-4-carbon-high",
     "gemini-4-argon-high",
-    "gemini-3.8-flash-high",
+    "gemini-4-carbon-high",
     "gpt-oss-120b-medium",
   ];
 
   it("includes the known advertised IDs and current Flash tiers", () => {
-    expect([...ADVERTISED_TIER_SUFFIX_MODEL_IDS]).toEqual(expect.arrayContaining([...advertised, "gemini-3.8-flash-low", "gemini-3.8-flash-medium"]));
+    expect([...ADVERTISED_TIER_SUFFIX_MODEL_IDS]).toEqual(expect.arrayContaining([...advertised, "gemini-4-carbon-low", "gemini-4-carbon-medium"]));
   });
 
   it.each(advertised)("keeps %s intact for antigravity routing", (modelId) => {
@@ -382,22 +382,22 @@ describe("advertised tier-suffix model IDs", () => {
   });
 
   it("matches with or without the quota prefix, case-insensitively", () => {
-    expect(isAdvertisedTierSuffixModel("gemini-3.8-flash-high")).toBe(true);
-    expect(isAdvertisedTierSuffixModel("antigravity-GEMINI-3.8-FLASH-HIGH")).toBe(true);
-    expect(isAdvertisedTierSuffixModel("gemini-3.8-flash")).toBe(false);
+    expect(isAdvertisedTierSuffixModel("gemini-4-carbon-high")).toBe(true);
+    expect(isAdvertisedTierSuffixModel("antigravity-GEMINI-4-CARBON-HIGH")).toBe(true);
+    expect(isAdvertisedTierSuffixModel("gemini-4-carbon")).toBe(false);
     expect(isAdvertisedTierSuffixModel("gemini-3-flash-high")).toBe(false);
   });
 
   it("still derives the Gemini 3 thinking level from an advertised suffix", () => {
-    const result = resolveModelForHeaderStyle("gemini-3.8-flash-high", "antigravity");
-    expect(result.actualModel).toBe("gemini-3.8-flash-high");
+    const result = resolveModelForHeaderStyle("gemini-4-carbon-high", "antigravity");
+    expect(result.actualModel).toBe("gemini-4-carbon-high");
     expect(result.thinkingLevel).toBe("high");
     expect(result.quotaPreference).toBe("antigravity");
   });
 
   it("does not rewrite an advertised ID when a variant thinking budget is applied", () => {
-    const result = resolveModelWithVariant("antigravity-gemini-3.8-flash-high", { thinkingBudget: 4096 });
-    expect(result.actualModel).toBe("gemini-3.8-flash-high");
+    const result = resolveModelWithVariant("antigravity-gemini-4-carbon-high", { thinkingBudget: 4096 });
+    expect(result.actualModel).toBe("gemini-4-carbon-high");
     expect(result.thinkingLevel).toBe("low");
   });
 
@@ -411,23 +411,23 @@ describe("advertised tier-suffix model IDs", () => {
 
 describe("tiered catalog families", () => {
   it("rewrites a collapsed model to the backend tier ID", () => {
-    expect(applyTierModelSuffix("gemini-3.8-flash", "low")).toBe("gemini-3.8-flash-low");
-    expect(applyTierModelSuffix("gemini-3.8-flash", "medium")).toBe("gemini-3.8-flash-medium");
-    expect(applyTierModelSuffix("gemini-3.8-flash", "high")).toBe("gemini-3.8-flash-high");
+    expect(applyTierModelSuffix("gemini-4-carbon", "low")).toBe("gemini-4-carbon-low");
+    expect(applyTierModelSuffix("gemini-4-carbon", "medium")).toBe("gemini-4-carbon-medium");
+    expect(applyTierModelSuffix("gemini-4-carbon", "high")).toBe("gemini-4-carbon-high");
   });
 
   it("replaces an existing tier suffix and strips the quota prefix", () => {
-    expect(applyTierModelSuffix("gemini-3.8-flash-low", "medium")).toBe("gemini-3.8-flash-medium");
-    expect(applyTierModelSuffix("antigravity-gemini-3.8-flash", "high")).toBe("antigravity-gemini-3.8-flash-high");
+    expect(applyTierModelSuffix("gemini-4-carbon-low", "medium")).toBe("gemini-4-carbon-medium");
+    expect(applyTierModelSuffix("antigravity-gemini-4-carbon", "high")).toBe("antigravity-gemini-4-carbon-high");
   });
 
   it("falls back to low when the requested level is unknown or missing", () => {
-    expect(applyTierModelSuffix("gemini-3.8-flash", "turbo")).toBe("gemini-3.8-flash-low");
-    expect(applyTierModelSuffix("gemini-3.8-flash", undefined)).toBe("gemini-3.8-flash-low");
+    expect(applyTierModelSuffix("gemini-4-carbon", "turbo")).toBe("gemini-4-carbon-low");
+    expect(applyTierModelSuffix("gemini-4-carbon", undefined)).toBe("gemini-4-carbon-low");
   });
 
   it("never emits a tier the family does not publish", () => {
-    expect(applyTierModelSuffix("gemini-3.8-flash", "minimal")).toBe("gemini-3.8-flash-low");
+    expect(applyTierModelSuffix("gemini-4-carbon", "minimal")).toBe("gemini-4-carbon-low");
   });
 
   it("leaves families that publish a real base ID untouched", () => {
@@ -480,8 +480,8 @@ describe("published tier guard", () => {
     expect(publishedTierFor("gemini-4-neon", "xhigh")).toBe("xhigh");
     expect(publishedTierFor("antigravity-gemini-4-neon", "low")).toBe("low");
     // 3.8 Flash stops at high, so the xhigh sentinel must not reach the backend.
-    expect(publishedTierFor("gemini-3.8-flash", "xhigh")).toBe("low");
-    expect(publishedTierFor("gemini-3.8-flash", "minimal")).toBe("low");
+    expect(publishedTierFor("gemini-4-carbon", "xhigh")).toBe("low");
+    expect(publishedTierFor("gemini-4-carbon", "minimal")).toBe("low");
   });
 
   it("passes through for families the catalog does not collapse", () => {
@@ -526,7 +526,7 @@ describe("getModelFamily", () => {
     expect(getModelFamily("gemini-4-argon-high")).toBe("gemini");
     expect(getModelFamily("antigravity-gemini-4-argon")).toBe("gemini");
     expect(getModelFamily("gemini-pro-orchestrator-g1-pro")).toBe("gemini");
-    expect(getModelFamily("gemini-3.8-flash")).toBe("gemini");
+    expect(getModelFamily("gemini-4-carbon")).toBe("gemini");
     expect(getModelFamily("gemini-4-hydrogen")).toBe("gemini");
     expect(getModelFamily("gemini-4-hydrogen-high")).toBe("gemini");
     expect(getModelFamily("gemini-4-neon")).toBe("gemini");
