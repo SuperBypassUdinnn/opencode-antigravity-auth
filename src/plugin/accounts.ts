@@ -390,7 +390,7 @@ function quotaModelCandidates(model?: string | null): string[] {
     .replace(/-(minimal|low|medium|high|xhigh|tiered)$/i, "")
     .replace(/-preview$/i, "");
   // The cache stores the tier-suffixed names the backend reports (e.g.
-  // gemini-3.8-flash-high), so a bare request must also try the tier
+  // gemini-4-hydrogen-high), so a bare request must also try the tier
   // variants. The request's own tier, if any, wins before the defaults,
   // and -high leads the defaults because bare gemini-3 requests resolve
   // to the high tier in practice.

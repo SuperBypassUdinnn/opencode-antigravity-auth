@@ -385,7 +385,7 @@ describe("OpenCode V2 adapter", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
       const url = input instanceof Request ? input.url : String(input)
       if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: "fresh", refresh_token: "rotated", expires_in: 3600 })
-      if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-3.8-flash-high": {} } })
+      if (url.endsWith(":fetchAvailableModels")) return Response.json({ models: { "gemini-4-hydrogen-high": {} } })
       return Response.json({ buckets: [] })
     })
     const id = accountID(state.storage!.accounts[0]!)
@@ -393,15 +393,15 @@ describe("OpenCode V2 adapter", () => {
     // Discovery runs after setup so it cannot block the client; wait for the
     // sweep it started.
     await vi.waitFor(() => expect(state.storage?.accounts[0]?.refreshToken).toBe("rotated"))
-    expect(adapter.storage.get("model-catalog")).toMatchObject({ version: 4, identity: accountPoolIdentity(state.storage!.accounts), accounts: { "antigravity-gemini-3.8-flash-high": [id] } })
+    expect(adapter.storage.get("model-catalog")).toMatchObject({ version: 4, identity: accountPoolIdentity(state.storage!.accounts), accounts: { "antigravity-gemini-4-hydrogen-high": [id] } })
   })
 
   it("sends a discovered model only through an account advertising it", async () => {
     const network = mockNetwork()
     state.storage!.accounts.push({ ...pool().accounts[0]!, email: "second@example.test", refreshToken: "second" })
-    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { "antigravity-gemini-3.8-flash-high": [accountID(state.storage!.accounts[1]!)] } })
-    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
-    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    const adapter = await host({ connection: false, catalog: { "gemini-4-hydrogen-high": {} }, catalogAccounts: { "antigravity-gemini-4-hydrogen-high": [accountID(state.storage!.accounts[1]!)] } })
+    const { sdk } = await adapter.sdk("antigravity-gemini-4-hydrogen-high")
+    await stream(sdk, "antigravity-gemini-4-hydrogen-high")
     const tokenRequests = network.mock.calls.filter(([input]) => String(input).includes("oauth2.googleapis.com/token"))
     expect(tokenRequests).toHaveLength(1)
     expect(String(tokenRequests[0]?.[1]?.body)).toContain("refresh_token=second")
@@ -412,19 +412,19 @@ describe("OpenCode V2 adapter", () => {
     const adapter = await host({
       connection: false,
       catalog: {
-        "gemini-3.8-flash-low": { displayName: "Gemini 3.8 Flash (Low)" },
-        "gemini-3.8-flash-medium": { displayName: "Gemini 3.8 Flash (Medium)" },
-        "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)" },
+        "gemini-4-hydrogen-low": { displayName: "Gemini 4 Hydrogen (Low)" },
+        "gemini-4-hydrogen-medium": { displayName: "Gemini 4 Hydrogen (Medium)" },
+        "gemini-4-hydrogen-high": { displayName: "Gemini 4 Hydrogen (High)" },
       },
-      catalogAccounts: { "antigravity-gemini-3.8-flash": [id] },
+      catalogAccounts: { "antigravity-gemini-4-hydrogen": [id] },
     })
-    expect(adapter.models.has("antigravity-gemini-3.8-flash-high")).toBe(false)
-    expect(adapter.models.get("antigravity-gemini-3.8-flash")?.variants.map(variant => variant.id)).toEqual(["low", "medium", "high"])
-    await expect(adapter.sdk("antigravity-gemini-3.8-flash")).resolves.toBeDefined()
+    expect(adapter.models.has("antigravity-gemini-4-hydrogen-high")).toBe(false)
+    expect(adapter.models.get("antigravity-gemini-4-hydrogen")?.variants.map(variant => variant.id)).toEqual(["low", "medium", "high"])
+    await expect(adapter.sdk("antigravity-gemini-4-hydrogen")).resolves.toBeDefined()
   })
 
   it("disables retired models from legacy config instead of exposing a native Google route", async () => {
-    const adapter = await host({ catalog: { "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)", maxTokens: 1048576, maxOutputTokens: 65536 } }, legacyOverride: true })
+    const adapter = await host({ catalog: { "gemini-4-hydrogen-high": { displayName: "Gemini 4 Hydrogen (High)", maxTokens: 1048576, maxOutputTokens: 65536 } }, legacyOverride: true })
     expect(adapter.models.get("antigravity-gemini-3-pro")?.enabled).toBe(false)
     expect(adapter.models.get("gemini-native-only")?.enabled).toBe(false)
     await expect(adapter.sdk("antigravity-gemini-3-pro")).rejects.toThrow("unavailable to the enabled Antigravity accounts")
@@ -439,8 +439,8 @@ describe("OpenCode V2 adapter", () => {
     await expect(stream(gatedSdk, "antigravity-gemini-4-argon")).rejects.toThrow(
       "No enabled Antigravity account has access to this model",
     )
-    const { sdk: freeSdk } = await adapter.sdk("antigravity-gemini-3.8-flash")
-    await expect(stream(freeSdk, "antigravity-gemini-3.8-flash")).resolves.toBeDefined()
+    const { sdk: freeSdk } = await adapter.sdk("antigravity-gemini-4-hydrogen")
+    await expect(stream(freeSdk, "antigravity-gemini-4-hydrogen")).resolves.toBeDefined()
   })
 
   it("keeps its SDK route after Core rewrites standard Google packages following every transform", async () => {
@@ -762,8 +762,8 @@ describe("discovery and account eligibility regressions", () => {
     const network = mockNetwork()
     state.storage!.accounts[0]!.refreshToken = "gemini-ineligible"
     state.storage!.accounts.push({ ...pool().accounts[0]!, email: "gemini-eligible@example.test", refreshToken: "gemini-eligible", rateLimitResetTimes: { "gemini-antigravity": Date.now() + 3600_000 } })
-    const id = "antigravity-gemini-3.8-flash-high"
-    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { [id]: [accountID(state.storage!.accounts[1]!)] } })
+    const id = "antigravity-gemini-4-hydrogen-high"
+    const adapter = await host({ connection: false, catalog: { "gemini-4-hydrogen-high": {} }, catalogAccounts: { [id]: [accountID(state.storage!.accounts[1]!)] } })
     const { sdk } = await adapter.sdk(id)
     const controller = new AbortController()
     const original = AccountManager.prototype.hasOtherAccountWithAntigravityAvailable
@@ -782,8 +782,8 @@ describe("discovery and account eligibility regressions", () => {
     const network = mockNetwork()
     state.storage!.accounts[0]!.refreshToken = "gemini-ineligible"
     state.storage!.accounts.push({ ...pool().accounts[0]!, email: "gemini-eligible@example.test", refreshToken: "gemini-eligible", rateLimitResetTimes: { "gemini-antigravity": Date.now() + 3600_000 } })
-    const id = "antigravity-gemini-3.8-flash-high"
-    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { [id]: [accountID(state.storage!.accounts[1]!)] } })
+    const id = "antigravity-gemini-4-hydrogen-high"
+    const adapter = await host({ connection: false, catalog: { "gemini-4-hydrogen-high": {} }, catalogAccounts: { [id]: [accountID(state.storage!.accounts[1]!)] } })
     const { sdk } = await adapter.sdk(id)
     const original = AccountManager.prototype.hasOtherAccountWithAntigravityAvailable
     let checks = 0
@@ -802,7 +802,7 @@ describe("discovery and account eligibility regressions", () => {
   })
 
   it("blocks a cached SDK after the only account supporting its model is disabled", async () => {
-    const model = "antigravity-gemini-3.8-flash-high"
+    const model = "antigravity-gemini-4-hydrogen-high"
     state.storage!.accounts[0]!.refreshToken = "only-low"
     state.storage!.accounts.push({ ...pool().accounts[0]!, email: "high@example.test", refreshToken: "only-high" })
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -810,7 +810,7 @@ describe("discovery and account eligibility regressions", () => {
       if (url.includes("oauth2.googleapis.com/token")) return Response.json({ access_token: `access-${new URLSearchParams(String(init?.body)).get("refresh_token")}`, expires_in: 3600 })
       if (url.endsWith(":fetchAvailableModels")) {
         const auth = new Headers(init?.headers).get("authorization") ?? ""
-        return Response.json({ models: auth.includes("only-high") ? { "gemini-3.8-flash-high": {} } : { "gemini-3-flash": {} } })
+        return Response.json({ models: auth.includes("only-high") ? { "gemini-4-hydrogen-high": {} } : { "gemini-3-flash": {} } })
       }
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
       if (url.endsWith(":retrieveUserQuotaSummary")) return Response.json({ groups: [] })
@@ -818,7 +818,7 @@ describe("discovery and account eligibility regressions", () => {
     })
     const highAccount = accountID(state.storage!.accounts[1]!)
     const lowAccount = accountID(state.storage!.accounts[0]!)
-    const adapter = await host({ connection: false, discoverModels: true, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { [model]: [highAccount] } })
+    const adapter = await host({ connection: false, discoverModels: true, catalog: { "gemini-4-hydrogen-high": {} }, catalogAccounts: { [model]: [highAccount] } })
     const { sdk } = await adapter.sdk(model)
     await stream(sdk, model)
     const context = { signal: new AbortController().signal, error: () => { throw new Error("Unexpected RPC error") } }
@@ -1650,7 +1650,7 @@ describe("retired manager control and deletion invariants", () => {
 })
 
 describe("managed storage rate limit reconciliation", () => {
-  const markerKey = "gemini-antigravity:gemini-3.8-flash-high"
+  const markerKey = "gemini-antigravity:gemini-4-hydrogen-high"
   const markerReset = 9_999_999_999_999
 
   function storedWithStaleMarker(reset = markerReset): AccountStorageV4 {
@@ -1660,7 +1660,7 @@ describe("managed storage rate limit reconciliation", () => {
         ...pool().accounts[0]!,
         id: "stable-first",
         rateLimitResetTimes: { [markerKey]: reset },
-        cachedQuota: { gemini: { remainingFraction: 1, modelCount: 1, models: { "gemini-3.8-flash-high": { remainingFraction: 1 } } } },
+        cachedQuota: { gemini: { remainingFraction: 1, modelCount: 1, models: { "gemini-4-hydrogen-high": { remainingFraction: 1 } } } },
         cachedQuotaUpdatedAt: Date.now(),
       }],
       activeIndex: 0,
@@ -1779,8 +1779,8 @@ describe("OAuth completing during an earlier save", () => {
         sweepStarted = true
         await new Promise<void>(resolve => { releaseSweep = resolve })
         return Response.json({
-          models: { "gemini-3.8-flash-high": { quotaInfo: { remainingFraction: 0.5 } } },
-          agentModelSorts: [{ groups: [{ modelIds: ["gemini-3.8-flash-high"] }] }],
+          models: { "gemini-4-hydrogen-high": { quotaInfo: { remainingFraction: 0.5 } } },
+          agentModelSorts: [{ groups: [{ modelIds: ["gemini-4-hydrogen-high"] }] }],
         })
       }
       if (url.endsWith(":retrieveUserQuota")) return Response.json({ buckets: [] })
@@ -1801,11 +1801,11 @@ describe("OAuth completing during an earlier save", () => {
     })
     const adapter = await host({
       connection: false,
-      catalog: { "gemini-3.8-flash-high": {} },
-      catalogAccounts: { "antigravity-gemini-3.8-flash-high": [accountID(state.storage!.accounts[0]!)] },
+      catalog: { "gemini-4-hydrogen-high": {} },
+      catalogAccounts: { "antigravity-gemini-4-hydrogen-high": [accountID(state.storage!.accounts[0]!)] },
     })
-    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
-    const pending = stream(sdk, "antigravity-gemini-3.8-flash-high")
+    const { sdk } = await adapter.sdk("antigravity-gemini-4-hydrogen-high")
+    const pending = stream(sdk, "antigravity-gemini-4-hydrogen-high")
     await vi.waitFor(() => expect(releaseStream).toBeDefined())
 
     // Run a forced discovery sweep while the stream is parked in flight.
@@ -1978,15 +1978,15 @@ describe("free account first", () => {
   it("spends the first request on a free account and then ranks normally", async () => {
     const network = mockNetwork()
     const ids = proAndFree()
-    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { "antigravity-gemini-3.8-flash-high": ids } })
-    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
+    const adapter = await host({ connection: false, catalog: { "gemini-4-hydrogen-high": {} }, catalogAccounts: { "antigravity-gemini-4-hydrogen-high": ids } })
+    const { sdk } = await adapter.sdk("antigravity-gemini-4-hydrogen-high")
 
-    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    await stream(sdk, "antigravity-gemini-4-hydrogen-high")
     expect(tokenBodies(network)[0]).toContain("refresh_token=free")
 
     // Warm-up is brief: the next request falls back to the Pro account instead
     // of pinning every request to the free one.
-    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    await stream(sdk, "antigravity-gemini-4-hydrogen-high")
     expect(tokenBodies(network).at(-1)).toContain("refresh_token=refresh")
   })
 
@@ -1994,10 +1994,10 @@ describe("free account first", () => {
     const network = mockNetwork()
     const ids = proAndFree()
     state.configOverrides = { free_account_first: false }
-    const adapter = await host({ connection: false, catalog: { "gemini-3.8-flash-high": {} }, catalogAccounts: { "antigravity-gemini-3.8-flash-high": ids } })
-    const { sdk } = await adapter.sdk("antigravity-gemini-3.8-flash-high")
+    const adapter = await host({ connection: false, catalog: { "gemini-4-hydrogen-high": {} }, catalogAccounts: { "antigravity-gemini-4-hydrogen-high": ids } })
+    const { sdk } = await adapter.sdk("antigravity-gemini-4-hydrogen-high")
 
-    await stream(sdk, "antigravity-gemini-3.8-flash-high")
+    await stream(sdk, "antigravity-gemini-4-hydrogen-high")
     expect(tokenBodies(network)[0]).toContain("refresh_token=refresh")
   })
 })

@@ -37,7 +37,7 @@ To use a local checkout, run `npm ci && npm run build` and replace the package n
 
 ```sh
 opencode models
-opencode run --model=google/antigravity-gemini-3.8-flash#high "Hello"
+opencode run --model=google/antigravity-gemini-4-hydrogen#high "Hello"
 opencode run --model=google/antigravity-gemini-4-hydrogen#xhigh "Hello"
 opencode run --model=google/antigravity-claude-opus-4-6-thinking#max "Hello"
 opencode run --model=google/antigravity-claude-sonnet-5-5#high "Hello"
@@ -77,7 +77,7 @@ This fork includes critical stability, protocol compatibility, model architectur
 - **Gemini 4 Argon (`antigravity-gemini-4-argon`)**: Managed in a dedicated weekly-only quota bucket with tier routing (`low`, `medium`, `high`) and pre-discovery gating.
 - **Gemini 4 Hydrogen (`antigravity-gemini-4-hydrogen`)**: Consolidated into a single model entry supporting `low`, `medium`, `high`, and `xhigh` variants. Employs a numeric budget sentinel (`XHIGH_TIER_BUDGET = 65535`) to bypass `@ai-sdk/google` enum limitations while mapping cleanly to backend tiers.
 - **Claude 5.5 Support (`antigravity-claude-sonnet-5-5`, `antigravity-claude-opus-5-5`)**: Added pre-discovery pro-tier gating, automatic thinking detection via `supportsThinking` and catalog `displayName`, dynamic thinking budget mapping (`8192` / `16384` / `32768`), snake_case `thinkingConfig` payload transformation, and preserved tier model suffixes.
-- **Gemini 3.8 Flash (`antigravity-gemini-3.8-flash`)**: Consolidated into a single model definition with selectable variants (`low`, `medium`, `high`) that rewrite backend IDs dynamically.
+- **Gemini 4 Hydrogen (`antigravity-gemini-4-hydrogen`)**: Consolidated into a single model definition with selectable variants (`low`, `medium`, `high`, `xhigh`) that rewrite backend IDs dynamically.
 - **Orchestrator Model Filtering**: Excludes internal Orchestrator planner (`gemini-pro-orchestrator-g1-pro`) and worker (`gemini-flash-worker-agy`) models from the published V2 model catalog via `isChatModel`.
 
 ### Multi-Tier and Pro Quota Management

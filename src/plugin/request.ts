@@ -1039,7 +1039,7 @@ export function prepareAntigravityRequest(
 
         if (headerStyle === "antigravity") {
           // The selected variant decides the backend ID for a family Google only
-          // publishes per tier (e.g. gemini-3.8-flash); its bare base ID is not a
+          // publishes per tier (e.g. gemini-4-hydrogen); its bare base ID is not a
           // valid model and is rejected with 404.
           effectiveModel = applyTierModelSuffix(effectiveModel, tierThinkingLevel);
           // Keep the thinking level on a tier the family actually publishes, so

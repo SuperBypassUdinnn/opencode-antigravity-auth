@@ -35,32 +35,33 @@ describe("OpenCode V2 models", () => {
       variants: [],
     })
     expect(resolveModelForHeaderStyle("antigravity-gemini-3.9-flash-medium", "antigravity").actualModel).toBe("gemini-3.9-flash-medium")
-    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
-    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-3.8-flash"]?.variants).toEqual([
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen-high"]).toBeUndefined()
+    expect(OPENCODE_V2_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"]?.variants).toEqual([
       { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
       { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
       { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
+      { id: "xhigh", settings: { thinkingConfig: { includeThoughts: true, thinkingBudget: XHIGH_TIER_BUDGET } } },
     ])
   })
 
   it("collapses per-tier catalog families into one model with a variant per tier", () => {
     const catalog = buildAccountModelDefinitions({
-      "gemini-3.8-flash-low": { displayName: "Gemini 3.8 Flash (Low)", maxTokens: 1048576, maxOutputTokens: 65536 },
-      "gemini-3.8-flash-medium": { displayName: "Gemini 3.8 Flash (Medium)", maxTokens: 1048576, maxOutputTokens: 65536 },
-      "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)", maxTokens: 1048576, maxOutputTokens: 65536 },
+      "gemini-4-carbon-low": { displayName: "Gemini 4 Carbon (Low)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-carbon-medium": { displayName: "Gemini 4 Carbon (Medium)", maxTokens: 1048576, maxOutputTokens: 262144 },
+      "gemini-4-carbon-high": { displayName: "Gemini 4 Carbon (High)", maxTokens: 1048576, maxOutputTokens: 262144 },
     })
 
-    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-3.8-flash"])
-    expect(catalog["antigravity-gemini-3.8-flash"]).toMatchObject({
-      name: "Gemini 3.8 Flash (Antigravity)",
-      limit: { context: 1048576, output: 65536 },
+    expect(Object.keys(catalog)).toEqual(["antigravity-gemini-4-carbon"])
+    expect(catalog["antigravity-gemini-4-carbon"]).toMatchObject({
+      name: "Gemini 4 Carbon (Antigravity)",
+      limit: { context: 1048576, output: 262144 },
       variants: [
         { id: "low", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } },
         { id: "medium", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" } } },
         { id: "high", settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } } },
       ],
     })
-    expect(catalog["antigravity-gemini-3.8-flash-high"]).toBeUndefined()
+    expect(catalog["antigravity-gemini-4-carbon-high"]).toBeUndefined()
   })
 
   it("collapses the Gemini 4 Hydrogen tiers into one model without the tiered duplicates", () => {
@@ -167,7 +168,7 @@ describe("pre-discovery model gate", () => {
     expect(isPreDiscoveryGatedModel("antigravity-claude-sonnet-5-5")).toBe(true)
     expect(isPreDiscoveryGatedModel("ANTIGRAVITY-CLAUDE-OPUS-5-5-THINKING-HIGH")).toBe(true)
     expect(isPreDiscoveryGatedModel("antigravity-claude-opus-5-5-high")).toBe(true)
-    expect(isPreDiscoveryGatedModel("antigravity-gemini-3.8-flash")).toBe(false)
+    expect(isPreDiscoveryGatedModel("antigravity-gemini-4-hydrogen")).toBe(false)
     expect(isPreDiscoveryGatedModel("antigravity-gemini-3-flash-high")).toBe(false)
     expect(isPreDiscoveryGatedModel("antigravity-claude-sonnet-4-6")).toBe(false)
   })

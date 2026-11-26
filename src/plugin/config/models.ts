@@ -38,6 +38,7 @@ export interface OpencodeModelDefinition extends ProviderModel {
   modalities: ModelModalities;
   variants?: Record<string, ModelVariant>;
   proTier?: boolean;
+  freeTier?: boolean;
 }
 
 export type OpencodeModelDefinitions = Record<string, OpencodeModelDefinition>;
@@ -223,6 +224,7 @@ export const ACTIVE_MANAGED_MODELS: Readonly<Record<string, ManagedModelEntry>> 
   },
   // The catalog advertises Gemini 4 Hydrogen as four per-tier IDs
   // (gemini-4-hydrogen-low/medium/high/xhigh) and a disabled bare ID.
+  // Available on free-tier accounts (alongside Pro/Ultra) under the unified "gemini" bucket.
   "antigravity-gemini-4-hydrogen": {
     v2Fallback: true,
     perTierBackendIds: true,
@@ -230,7 +232,7 @@ export const ACTIVE_MANAGED_MODELS: Readonly<Record<string, ManagedModelEntry>> 
       name: "Gemini 4 Hydrogen (Antigravity)",
       limit: { context: 1048576, output: 262144 },
       modalities: DEFAULT_MODALITIES,
-      proTier: true,
+      freeTier: true,
       variants: {
         low: { thinkingLevel: "low" },
         medium: { thinkingLevel: "medium" },
@@ -353,21 +355,6 @@ export const ACTIVE_MANAGED_MODELS: Readonly<Record<string, ManagedModelEntry>> 
  * advertised IDs, and legacy aliases update automatically.
  */
 export const SUNSET_MANAGED_MODELS: Readonly<Record<string, ManagedModelEntry>> = {
-  "antigravity-gemini-3.8-flash": {
-    v2Fallback: true,
-    perTierBackendIds: true,
-    sunset: { removalDate: "2026-11-30", scope: "all", retired: false },
-    definition: {
-      name: "Gemini 3.8 Flash (Antigravity)",
-      limit: { context: 1048576, output: 65536 },
-      modalities: DEFAULT_MODALITIES,
-      variants: {
-        low: { thinkingLevel: "low" },
-        medium: { thinkingLevel: "medium" },
-        high: { thinkingLevel: "high" },
-      },
-    },
-  },
   "antigravity-claude-sonnet-4-6": {
     v2Fallback: true,
     nonThinkingFallback: true,
@@ -436,13 +423,14 @@ export const SUNSET_DISCOVERED_MODELS: readonly DiscoveredOnlyModelEntry[] = [
  * lingering API entries stay filtered out.
  */
 export const RETIRED_MODEL_BASES: ReadonlySet<string> = new Set([
-  // Example after removal: "gemini-4-argon", "gemini-3.8-flash", "gpt-oss-120b"
+  "gemini-3.8-flash",
 ]);
 
 export interface ModelRegistryViews {
   definitions: OpencodeModelDefinitions;
   v2FallbackIds: readonly string[];
   proTierBases: ReadonlySet<string>;
+  freeTierBases: ReadonlySet<string>;
   retiredBases: ReadonlySet<string>;
   tierSuffixFamilies: ReadonlyArray<readonly [string, readonly ModelThinkingLevel[]]>;
   advertisedTierSuffixIds: readonly string[];
@@ -475,6 +463,7 @@ export function buildModelRegistryViews(
   const definitions: OpencodeModelDefinitions = {};
   const v2FallbackIds: string[] = [];
   const proTierBases = new Set<string>();
+  const freeTierBases = new Set<string>();
   const tierSuffixFamilies: Array<readonly [string, readonly ModelThinkingLevel[]]> = [];
   const advertisedTierSuffixIds = new Set<string>();
   const aliases: Record<string, string> = {};
@@ -498,6 +487,10 @@ export function buildModelRegistryViews(
 
     if (entry.definition.proTier === true) {
       proTierBases.add(base);
+    }
+
+    if (entry.definition.freeTier === true) {
+      freeTierBases.add(base);
     }
 
     if (entry.perTierBackendIds && entry.definition.variants) {
@@ -535,6 +528,7 @@ export function buildModelRegistryViews(
     definitions,
     v2FallbackIds,
     proTierBases,
+    freeTierBases,
     retiredBases,
     tierSuffixFamilies,
     advertisedTierSuffixIds: [...advertisedTierSuffixIds],
@@ -553,6 +547,7 @@ const REGISTRY = buildModelRegistryViews(
 export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = REGISTRY.definitions;
 export const V2_FALLBACK_MODEL_IDS: readonly string[] = REGISTRY.v2FallbackIds;
 export const PRO_TIER_MODEL_BASES: ReadonlySet<string> = REGISTRY.proTierBases;
+export const FREE_TIER_MODEL_BASES: ReadonlySet<string> = REGISTRY.freeTierBases;
 export const RETIRED_MODEL_IDS: ReadonlySet<string> = REGISTRY.retiredBases;
 export const SEEDED_TIER_SUFFIX_FAMILIES: ReadonlyArray<readonly [string, readonly ModelThinkingLevel[]]> =
   REGISTRY.tierSuffixFamilies;
@@ -620,6 +615,16 @@ export function isProTierModelId(
   proTierBases: ReadonlySet<string> = PRO_TIER_MODEL_BASES,
 ): boolean {
   return proTierBases.has(normalizeModelBase(modelId));
+}
+
+/**
+ * True when `modelId` belongs to a free-tier Antigravity model family.
+ */
+export function isFreeTierModelId(
+  modelId: string,
+  freeTierBases: ReadonlySet<string> = FREE_TIER_MODEL_BASES,
+): boolean {
+  return freeTierBases.has(normalizeModelBase(modelId));
 }
 
 /**
